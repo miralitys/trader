@@ -17,9 +17,11 @@ services:
     rootDir: backend
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    startCommand: sh -c "until alembic upgrade head; do sleep 5; done; uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
       - key: DATABASE_URL
         fromDatabase:
           name: trader-postgres
@@ -60,8 +62,10 @@ services:
     rootDir: backend
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: celery -A app.workers.celery_app.celery_app worker --beat --loglevel=info --concurrency=2
+    startCommand: sh -c "until alembic upgrade head; do sleep 5; done; celery -A app.workers.celery_app.celery_app worker --beat --loglevel=info --concurrency=2"
     envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
       - key: DATABASE_URL
         fromDatabase:
           name: trader-postgres
