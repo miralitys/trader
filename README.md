@@ -1,0 +1,255 @@
+# Trader Panel (Coinbase Advanced Trade, Paper-first)
+
+Production-oriented панель и backend для автоторговли SPOT LONG-only по USDC-парам на Coinbase Advanced Trade API.
+
+## Ключевые принципы
+- По умолчанию: `PAPER ON`, `LIVE OFF`.
+- Live включается только через Settings + явное подтверждение `ENABLE LIVE`.
+- Нет хранения raw API-ключей в логах/ответах.
+- Акцент на risk management, state machine исполнения, reconciliation и kill-switch.
+
+## Стек
+- Backend: FastAPI, SQLAlchemy 2, Alembic, Pydantic v2
+- Worker: Celery + Redis
+- DB: PostgreSQL 15
+- Frontend: Next.js 14, TypeScript, Tailwind, Lightweight Charts
+- Realtime: SSE (`/api/realtime/sse`)
+- Observability: JSON logs, Prometheus `/metrics`, опционально Sentry
+
+## Быстрый запуск
+
+Требования: Docker + Docker Compose.
+
+1. Скопировать переменные (если нужно):
+```bash
+cp .env.example .env
+```
+
+2. Поднять все сервисы:
+```bash
+docker compose up --build
+```
+
+После старта:
+- Backend: [http://localhost:8000](http://localhost:8000)
+- Swagger: [http://localhost:8000/docs](http://localhost:8000/docs)
+- Frontend: [http://localhost:3000](http://localhost:3000)
+- Flower: [http://localhost:5555](http://localhost:5555)
+
+## Deploy на Render.com
+
+В репозитории добавлен blueprint: [render.yaml](/Users/ramisyaparov/Desktop/Project/Trader/render.yaml)
+
+Что поднимается в Render:
+- `trader-postgres` (PostgreSQL)
+- `trader-redis` (Key Value / Redis)
+- `trader-backend` (FastAPI web service)
+- `trader-worker` (Celery worker + beat)
+- `trader-frontend` (Next.js web service)
+
+Шаги:
+1. Запушьте проект в GitHub/GitLab.
+2. В Render: `New` -> `Blueprint`.
+3. Подключите репозиторий и подтвердите создание сервисов из `render.yaml`.
+4. После первого деплоя проверьте:
+  - backend health: `https://<backend-service>.onrender.com/`
+  - frontend: `https://<frontend-service>.onrender.com`
+5. Если публичный URL backend отличается от `https://trader-backend.onrender.com`, обновите `NEXT_PUBLIC_API_URL` в сервисе `trader-frontend`.
+6. Для LIVE режима вручную задайте secrets в Render environment:
+  - `SECRET_ENCRYPTION_KEY`
+  - `COINBASE_API_KEY`
+  - `COINBASE_API_SECRET`
+  - `COINBASE_API_PASSPHRASE` (если используется)
+
+Примечания:
+- Render Postgres обычно выдаёт `postgres://...`; в проекте добавлена нормализация под SQLAlchemy.
+- CORS в blueprint выставлен как `*` (под Bearer auth, без cookie-сессий).
+- План Free может “засыпать” web-сервисы; для стабильного бота лучше paid plan.
+
+## Как создать пользователя
+
+Вариант 1 (UI):
+- Открыть frontend `http://localhost:3000`
+- На экране логина переключиться в `Sign up`
+- Создать аккаунт
+
+Вариант 2 (Swagger):
+- `POST /api/auth/signup`
+- затем `POST /api/auth/login`
+- использовать Bearer token в Authorize
+
+Первый зарегистрированный пользователь автоматически получает роль `admin`.
+
+## Paper/Live режим
+
+### Paper (обязательный режим, default)
+- Управляется в `Settings` (`paper_enabled=true`)
+- Исполнение через paper state machine (`signals -> orders -> fills -> positions -> exits`)
+- Комиссии и slippage настраиваются в `fees_json`
+
+### Live (по флагу)
+- В `Settings` включить `live_enabled=true`
+- Ввести подтверждение `ENABLE LIVE`
+- Убедиться, что ключи Coinbase заданы (ENV или encrypted settings)
+- При аномалиях reconciliation/data delay активируется kill-switch
+
+## Coinbase ключи и безопасность
+
+Поддержаны два пути:
+1. ENV (`COINBASE_API_KEY`, `COINBASE_API_SECRET`)
+2. Settings API (с шифрованием в БД, если задан `SECRET_ENCRYPTION_KEY`)
+
+Важно:
+- raw ключи не отдаются обратно API.
+- в UI сохраняется только hint (последние 4 символа).
+- без `SECRET_ENCRYPTION_KEY` backend не позволит сохранять ключи в БД.
+
+## Universe и данные
+
+Input universe:
+`DYDX, INJ, ICP, GALA, AXS, TRB, ONDO, IOTA, NOT, FIL, NEO, ENJ, HYPE, STRK, SLP, ONE, MINA, RVN, RUNE`
+
+Реальная торговля:
+- Только доступные `*-USDC` инструменты Coinbase
+- TOP-5 по 30d quote volume
+- Пересчёт weekly (`universe_selector_task`)
+
+## Backtest defaults (обязательно)
+
+По умолчанию период backtest:
+- rolling window последних 24 месяцев до текущей даты.
+
+Universe selection для backtest:
+1. Получаем Coinbase products.
+2. Оставляем только `status=online` и `quote=USDC`.
+3. Пересекаем с input ticker list пользователя.
+4. Ранжируем по ликвидности (24h notional/volume, иначе proxy по свечам).
+5. Выбираем TOP-5.
+6. Заменяем пары с недостаточной историей (на большую часть 24м) следующими по ликвидности с лучшим coverage, чтобы увеличить общий период данных.
+
+Execution model (default, conservative):
+- `taker-only` для всех входов/выходов.
+- `entry slippage = +0.10%`.
+- `exit slippage = -0.10%`.
+- `stop slippage = -0.20%`.
+- комиссии берутся как taker fee из `Settings.fees_json.taker_fee_pct`.
+- сигнал формируется только на закрытии свечи, вход возможен только со следующей свечи (no lookahead).
+
+Обязательные stress-сценарии:
+- `1.5x` от fees+slippage.
+- `2.0x` от fees+slippage.
+
+В каждом отчёте backtest (`metrics_json`) явно сохраняются:
+- assumptions (fees/slippage/taker-only/period/universe),
+- data availability по каждому кандидату,
+- base + stress_1_5x + stress_2_0x метрики.
+
+## Стратегии (MVP)
+
+### StrategyBreakoutRetest
+- Regime (1H): `close > EMA200`, `EMA200 slope >= 0`, `ATR% < threshold`
+- Signal (5m): breakout above highest high (lookback=20) на закрытой свече
+- Entry: limit near retest (`breakout_level - k*ATR`)
+- SL: `entry - 1*ATR`
+- TP: partial 1R + финальный 2R / trailing stop
+
+### StrategyPullbackToTrend
+- Тот же 1H regime
+- Pullback к EMA50 + RSI filter
+- Вход при reclaim выше EMA20
+- SL: ниже pullback low
+- TP: фиксированный R-multiple
+
+No DCA / no martingale.
+
+## Риск-менеджмент (default)
+- `risk_per_trade_pct = 1.0`
+- `max_positions = 1`
+- `max_trades_per_day = 2`
+- `daily_loss_limit_pct = 2.0`
+- `weekly_loss_limit_pct = 5.0`
+- `consecutive_losses_pause = 2`
+- `max_hold_hours = 72`
+- `entry_ttl_minutes = 60`
+
+Position sizing:
+```text
+size_quote = equity * risk_per_trade_pct/100 / (entry - stop) * entry
+```
+С учётом `min_size` и `size_increment` инструмента.
+
+## SSE события
+Endpoint: `GET /api/realtime/sse`
+
+Типы событий:
+- `signal_created`
+- `order_placed`
+- `order_filled`
+- `position_opened`
+- `position_closed`
+- `kill_switch`
+- `data_delay`
+- `error`
+
+Admin-only logs:
+- `GET /api/system/logs?limit=200`
+
+## Структура репозитория
+
+```text
+backend/
+  app/
+    api core db models schemas services strategies risk execution realtime workers
+  alembic/
+  tests/
+frontend/
+  app/
+  components/
+  lib/
+```
+
+## Полезные команды
+
+Backend tests:
+```bash
+cd backend
+python3 -m pytest
+```
+
+Frontend build:
+```bash
+cd frontend
+npm install
+npm run build
+```
+
+## Troubleshooting
+
+1. `docker: command not found`
+- Установить Docker Desktop и убедиться, что CLI доступен в PATH.
+
+2. `Live mode requires Coinbase API credentials`
+- Добавить ключи через ENV или Settings (при `SECRET_ENCRYPTION_KEY`).
+
+3. `SECRET_ENCRYPTION_KEY not set`
+- Либо задайте `SECRET_ENCRYPTION_KEY`, либо используйте только ENV-ключи.
+
+4. Нет сигналов/сделок
+- Проверьте что:
+  - есть данные свечей (ingest worker)
+  - universe заполнен (`/api/universe/current`)
+  - `paper_enabled=true`
+  - kill-switch не активирован
+
+5. Kill-switch сработал из-за data delay
+- Проверьте доступ к Coinbase API, Redis, и работу `ingest_market_data_task`.
+
+6. Local Python < 3.11
+- Проект рассчитан на Python 3.11+ (в Docker уже используется 3.11).
+
+## Примечание по LIVE исполнению
+
+Live execution изолирован флагом и по умолчанию выключен. Перед боевым включением необходимо:
+- проверить формат/permissions ключей Coinbase,
+- протестировать end-to-end на paper,
+- проверить reconciliation и отмену открытых entry-ордеров при аномалиях.
