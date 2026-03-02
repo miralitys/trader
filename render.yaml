@@ -100,5 +100,8 @@ services:
     buildCommand: npm ci && npm run build
     startCommand: npm run start
     envVars:
-      - key: NEXT_PUBLIC_API_URL
-        value: "https://trader-backend.onrender.com"
+      - key: BACKEND_PROXY_TARGET
+        fromService:
+          type: web
+          name: trader-backend
+          property: hostport

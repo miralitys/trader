@@ -54,8 +54,7 @@ docker compose up --build
 4. После первого деплоя проверьте:
   - backend health: `https://<backend-service>.onrender.com/`
   - frontend: `https://<frontend-service>.onrender.com`
-5. Если публичный URL backend отличается от `https://trader-backend.onrender.com`, обновите `NEXT_PUBLIC_API_URL` в сервисе `trader-frontend`.
-6. Для LIVE режима вручную задайте secrets в Render environment:
+5. Для LIVE режима вручную задайте secrets в Render environment:
   - `SECRET_ENCRYPTION_KEY`
   - `COINBASE_API_KEY`
   - `COINBASE_API_SECRET`
@@ -63,6 +62,7 @@ docker compose up --build
 
 Примечания:
 - Render Postgres обычно выдаёт `postgres://...`; в проекте добавлена нормализация под SQLAlchemy.
+- Frontend в Render проксирует `/api/*` на backend по внутренней сети (`BACKEND_PROXY_TARGET` из blueprint), поэтому ручная настройка `NEXT_PUBLIC_API_URL` обычно не нужна.
 - CORS в blueprint выставлен как `*` (под Bearer auth, без cookie-сессий).
 - План Free может “засыпать” web-сервисы; для стабильного бота лучше paid plan.
 
