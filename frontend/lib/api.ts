@@ -2,7 +2,9 @@
 
 import { getToken } from './auth'
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || ''
+// Always use same-origin API routes from the browser.
+// Next.js handles forwarding to backend in app/api/[...path]/route.ts.
+const API_BASE = ''
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken()
