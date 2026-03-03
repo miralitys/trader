@@ -34,8 +34,13 @@ export default function OverviewPage() {
   const [universe, setUniverse] = useState<Universe | null>(null)
   const [trades, setTrades] = useState<Trade[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null)
 
-  async function load() {
+  async function load(showSpinner = true) {
+    if (showSpinner) {
+      setRefreshing(true)
+    }
     try {
       const [h, u, t] = await Promise.all([
         apiFetch<Health>('/api/health'),
@@ -45,13 +50,22 @@ export default function OverviewPage() {
       setHealth(h)
       setUniverse(u)
       setTrades(t)
+      setLastUpdatedAt(new Date())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load overview')
+    } finally {
+      if (showSpinner) {
+        setRefreshing(false)
+      }
     }
   }
 
   useEffect(() => {
     load()
+    const timer = setInterval(() => {
+      load(false)
+    }, 30000)
+    return () => clearInterval(timer)
   }, [])
 
   const metrics = useMemo(() => {
@@ -72,9 +86,19 @@ export default function OverviewPage() {
           <h1 className="text-2xl font-semibold">Overview</h1>
           <p className="text-sm text-muted">System state, universe, latency and paper PnL snapshot.</p>
         </div>
-        <button className="rounded-lg border border-line bg-panel px-3 py-2 text-sm" onClick={load}>
-          Refresh
-        </button>
+        <div className="flex items-center gap-3">
+          <div className="text-xs text-muted">
+            {lastUpdatedAt ? `Updated ${lastUpdatedAt.toLocaleTimeString()}` : 'Not updated yet'}
+          </div>
+          <button
+            type="button"
+            className="rounded-lg border border-line bg-panel px-3 py-2 text-sm cursor-pointer disabled:opacity-60"
+            onClick={() => load(true)}
+            disabled={refreshing}
+          >
+            {refreshing ? 'Refreshing...' : 'Refresh'}
+          </button>
+        </div>
       </div>
 
       {error ? <div className="card p-3 text-bad text-sm whitespace-pre-wrap">{error}</div> : null}
