@@ -2,35 +2,33 @@ import { NextRequest } from 'next/server'
 
 const API_PREFIX = '/api/'
 
-function resolveBackendBase(): string {
-  const raw =
-    process.env.BACKEND_PROXY_TARGET ||
-    process.env.NEXT_PUBLIC_API_URL ||
-    'http://localhost:8000'
-
+function normalizeBackendBase(raw: string): string {
   const cleaned = raw.trim().replace(/\/+$/, '')
-  if (!cleaned) {
-    return 'http://localhost:8000'
-  }
-
-  if (cleaned.includes('://')) {
-    return cleaned
-  }
-
+  if (!cleaned) return ''
+  if (cleaned.includes('://')) return cleaned
   return `http://${cleaned}`
 }
 
-function buildTargetUrl(pathSegments: string[], search: string): string {
-  const base = resolveBackendBase()
+function candidateBackendBases(): string[] {
+  const envCandidates = [
+    process.env.BACKEND_PROXY_TARGET || '',
+    process.env.BACKEND_FALLBACK_URL || '',
+    process.env.NEXT_PUBLIC_API_URL || '',
+  ]
+  const normalized = envCandidates.map(normalizeBackendBase).filter(Boolean)
+  const deduped = Array.from(new Set(normalized))
+  if (deduped.length) return deduped
+  return ['http://localhost:8000']
+}
+
+function buildTargetUrl(base: string, pathSegments: string[], search: string): string {
   const path = pathSegments.join('/')
   const fullPath = `${API_PREFIX}${path}`
   return `${base}${fullPath}${search}`
 }
 
 async function proxy(request: NextRequest, pathSegments: string[]): Promise<Response> {
-  const targetUrl = buildTargetUrl(pathSegments, request.nextUrl.search)
   const headers = new Headers(request.headers)
-
   headers.delete('host')
   headers.delete('origin')
   headers.set('x-forwarded-host', request.headers.get('host') || '')
@@ -43,20 +41,37 @@ async function proxy(request: NextRequest, pathSegments: string[]): Promise<Resp
     redirect: 'manual',
     cache: 'no-store',
   }
-
   if (method !== 'GET' && method !== 'HEAD') {
     requestInit.body = await request.arrayBuffer()
   }
 
-  const upstream = await fetch(targetUrl, requestInit)
-  const responseHeaders = new Headers(upstream.headers)
-  responseHeaders.delete('content-length')
+  const tried: string[] = []
+  let lastError = ''
+  for (const base of candidateBackendBases()) {
+    const targetUrl = buildTargetUrl(base, pathSegments, request.nextUrl.search)
+    tried.push(base)
+    try {
+      const upstream = await fetch(targetUrl, requestInit)
+      const responseHeaders = new Headers(upstream.headers)
+      responseHeaders.delete('content-length')
+      return new Response(upstream.body, {
+        status: upstream.status,
+        statusText: upstream.statusText,
+        headers: responseHeaders,
+      })
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : 'unknown fetch error'
+    }
+  }
 
-  return new Response(upstream.body, {
-    status: upstream.status,
-    statusText: upstream.statusText,
-    headers: responseHeaders,
-  })
+  return Response.json(
+    {
+      detail: 'Backend proxy failed',
+      tried,
+      last_error: lastError,
+    },
+    { status: 502 }
+  )
 }
 
 type RouteContext = {
