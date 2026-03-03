@@ -100,8 +100,9 @@ services:
     buildCommand: npm ci && npm run build
     startCommand: npm run start
     envVars:
+      - key: NODE_VERSION
+        value: "20"
       - key: BACKEND_PROXY_TARGET
-        fromService:
-          type: web
-          name: trader-backend
-          property: hostport
+        sync: false
+      - key: BACKEND_FALLBACK_URL
+        sync: false
