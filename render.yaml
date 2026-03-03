@@ -15,7 +15,7 @@ services:
     name: trader-backend
     runtime: python
     rootDir: backend
-    plan: free
+    plan: starter
     buildCommand: pip install -r requirements.txt
     startCommand: sh -c "until alembic upgrade head; do sleep 5; done; uvicorn app.main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /
@@ -96,7 +96,7 @@ services:
     name: trader-frontend
     runtime: node
     rootDir: frontend
-    plan: free
+    plan: starter
     buildCommand: npm ci && npm run build
     startCommand: npm run start
     envVars:
