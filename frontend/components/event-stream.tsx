@@ -68,7 +68,7 @@ export function EventStream() {
         </div>
       </div>
 
-      <div className="pointer-events-none fixed right-4 top-4 z-50 space-y-2">
+      <div className="pointer-events-none fixed bottom-4 right-4 z-50 space-y-2">
         {toasts.map((toast, idx) => (
           <div key={`${toast.ts}-toast-${idx}`} className="rounded-lg border border-line bg-panel p-3 shadow-lg">
             <div className="text-sm font-medium">{toast.type}</div>
