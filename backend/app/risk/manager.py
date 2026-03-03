@@ -21,6 +21,7 @@ class RiskParams:
     entry_ttl_minutes: int = 60
     consecutive_losses_pause: int = 2
     max_drawdown_pct: float = 10.0
+    max_position_notional_pct: float = 100.0
 
 
 @dataclass
@@ -44,6 +45,7 @@ def calculate_position_size(
     entry: float,
     stop: float,
     constraints: InstrumentConstraints,
+    max_quote_exposure: float | None = None,
 ) -> tuple[float, float]:
     risk = entry - stop
     if equity <= 0 or risk_per_trade_pct <= 0 or risk <= 0 or entry <= 0:
@@ -51,6 +53,8 @@ def calculate_position_size(
 
     # size_quote = equity * risk_pct / (entry - stop) * entry
     size_quote = equity * (risk_per_trade_pct / 100.0) / risk * entry
+    if max_quote_exposure is not None and max_quote_exposure > 0:
+        size_quote = min(size_quote, max_quote_exposure)
     qty_base = size_quote / entry
 
     qty_base = round_down_to_increment(qty_base, constraints.size_increment)
@@ -102,6 +106,7 @@ class RiskManager:
             entry=entry,
             stop=stop,
             constraints=constraints,
+            max_quote_exposure=equity * (self.params.max_position_notional_pct / 100.0),
         )
         if qty_base <= 0:
             return RiskDecision(False, "position below minimum size")

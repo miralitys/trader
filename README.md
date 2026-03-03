@@ -188,6 +188,10 @@ size_quote = equity * risk_per_trade_pct/100 / (entry - stop) * entry
 ```
 С учётом `min_size` и `size_increment` инструмента.
 
+Для SPOT-профиля включён дополнительный cap:
+- `max_position_notional_pct` (default `100`) ограничивает quote-ношинал позиции долей от equity.
+- Это не даёт paper/live открывать позицию больше доступного капитала.
+
 ## SSE события
 Endpoint: `GET /api/realtime/sse`
 

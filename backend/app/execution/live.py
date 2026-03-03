@@ -201,6 +201,9 @@ def run_live_execution_cycle(db: Session, setting: Setting) -> dict:
             entry_ttl_minutes=int(setting.risk_params_json.get("entry_ttl_minutes", 60)),
             consecutive_losses_pause=int(setting.risk_params_json.get("consecutive_losses_pause", 2)),
             max_drawdown_pct=float(setting.risk_params_json.get("max_drawdown_pct", 10.0)),
+            max_position_notional_pct=float(
+                setting.risk_params_json.get("max_position_notional_pct", 100.0)
+            ),
         )
         risk = RiskManager(risk_params)
 
@@ -273,6 +276,7 @@ def run_live_execution_cycle(db: Session, setting: Setting) -> dict:
             )
             placed += 1
             open_positions += 1
+            trades_today += 1
 
         return {"status": "ok", "placed": placed}
     except Exception as exc:

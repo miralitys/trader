@@ -40,3 +40,18 @@ def test_reject_on_limits():
 
     assert decision.allowed is False
     assert "max_positions" in decision.reason
+
+
+def test_position_size_is_capped_by_quote_exposure():
+    constraints = InstrumentConstraints(min_size=0.001, size_increment=0.001)
+    qty_base, qty_quote = calculate_position_size(
+        equity=10000,
+        risk_per_trade_pct=1.0,
+        entry=100,
+        stop=99.5,
+        constraints=constraints,
+        max_quote_exposure=5000,
+    )
+
+    assert qty_base == 50.0
+    assert qty_quote == 5000.0

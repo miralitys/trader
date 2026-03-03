@@ -18,6 +18,7 @@ DEFAULT_RISK = {
     "kill_switch_on_reconciliation_error": True,
     "max_drawdown_pct": 10.0,
     "strict_mode_action": "pause",
+    "max_position_notional_pct": 100.0,
 }
 
 DEFAULT_STRATEGY = {
