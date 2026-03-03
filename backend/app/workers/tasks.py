@@ -13,7 +13,7 @@ from app.execution.reconciliation import run_reconciliation_cycle
 from app.models.entities import Setting
 from app.services.backtest_service import run_backtest
 from app.services.coinbase import CoinbaseCredentials
-from app.services.market_data import ingest_candles, sync_instruments
+from app.services.market_data import backfill_history, ingest_candles, sync_instruments
 from app.services.strategy_runner import run_strategy_cycle
 from app.services.universe import recompute_universe
 
@@ -66,6 +66,22 @@ def universe_selector_task() -> dict:
                 "top_symbols": result.get("top_symbols", []),
                 "count": len(result.get("top_symbols", [])),
             }
+        finally:
+            db.close()
+
+
+@shared_task(name="app.workers.tasks.backfill_history_task")
+def backfill_history_task() -> dict:
+    with _timed("backfill_history"):
+        db = SessionLocal()
+        try:
+            sync_instruments(db)
+            setting = _get_setting(db)
+            symbols = setting.universe_json.get("top_symbols", []) if setting else []
+            if not symbols and setting:
+                universe = recompute_universe(db, setting)
+                symbols = universe.get("top_symbols", [])
+            return backfill_history(db, symbols=symbols)
         finally:
             db.close()
 

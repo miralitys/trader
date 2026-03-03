@@ -19,7 +19,8 @@ DEFAULT_BACKTEST_ENTRY_SLIPPAGE_PCT = 0.10
 DEFAULT_BACKTEST_EXIT_SLIPPAGE_PCT = 0.10
 DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT = 0.20
 DEFAULT_BACKTEST_TAKER_FEE_PCT = 0.60
-DEFAULT_HISTORY_COVERAGE_THRESHOLD = 0.60
+DEFAULT_HISTORY_TARGET_COVERAGE_RATIO = 0.20
+DEFAULT_HISTORY_MIN_COVERAGE_RATIO = 0.03
 
 
 @dataclass
@@ -249,39 +250,55 @@ def _build_universe_candidates(
     return candidates, source
 
 
-def _select_top5_with_history(candidates: list[UniverseCandidate]) -> list[UniverseCandidate]:
+def _select_top5_with_history(
+    candidates: list[UniverseCandidate],
+    target_coverage_ratio: float,
+    min_coverage_ratio: float,
+) -> list[UniverseCandidate]:
     if not candidates:
         return []
 
-    selected = candidates[:5]
-    remaining = candidates[5:]
+    selected: list[UniverseCandidate] = []
+    remaining: list[UniverseCandidate] = []
+
+    for candidate in candidates:
+        if candidate.coverage_ratio < min_coverage_ratio:
+            candidate.selection_reason = "excluded_coverage_below_floor"
+            continue
+        if len(selected) < 5:
+            candidate.selection_reason = "liquidity_rank"
+            selected.append(candidate)
+        else:
+            remaining.append(candidate)
+
+    if not selected:
+        return []
 
     for idx, item in enumerate(selected):
-        item.selection_reason = "liquidity_rank"
-        if item.coverage_ratio >= DEFAULT_HISTORY_COVERAGE_THRESHOLD:
+        if item.coverage_ratio >= target_coverage_ratio:
             continue
 
         replacement_idx = next(
             (
                 i
                 for i, candidate in enumerate(remaining)
-                if candidate.coverage_ratio >= DEFAULT_HISTORY_COVERAGE_THRESHOLD
+                if candidate.coverage_ratio >= target_coverage_ratio
             ),
             None,
         )
         if replacement_idx is None:
-            item.selection_reason = "kept_no_better_history_candidate"
+            item.selection_reason = "kept_below_target_no_better_candidate"
             continue
 
         replacement = remaining.pop(replacement_idx)
-        replacement.selection_reason = f"replaced_{item.symbol}_for_history"
-        item.selection_reason = "excluded_low_history"
+        replacement.selection_reason = f"replaced_{item.symbol}_for_coverage"
+        item.selection_reason = "excluded_below_target"
         selected[idx] = replacement
 
     for item in selected:
         item.selected = True
 
-    return selected
+    return selected[:5]
 
 
 def _compute_effective_common_start(
@@ -488,6 +505,19 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         setting = db.scalar(select(Setting).order_by(Setting.id.asc()).limit(1))
         requested_start = backtest.start_ts
         requested_end = backtest.end_ts
+        params = backtest.params_json.copy()
+        target_coverage_ratio = _to_float(
+            params.get("history_target_coverage_ratio"),
+            DEFAULT_HISTORY_TARGET_COVERAGE_RATIO,
+        )
+        min_coverage_ratio = _to_float(
+            params.get("history_min_coverage_ratio"),
+            DEFAULT_HISTORY_MIN_COVERAGE_RATIO,
+        )
+        target_coverage_ratio = min(max(target_coverage_ratio, 0.0), 1.0)
+        min_coverage_ratio = min(max(min_coverage_ratio, 0.0), 1.0)
+        if min_coverage_ratio > target_coverage_ratio:
+            target_coverage_ratio = min_coverage_ratio
 
         input_tickers = (
             setting.universe_json.get("input_tickers", DEFAULT_UNIVERSE_INPUT)
@@ -501,18 +531,23 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             start_ts=requested_start,
             end_ts=requested_end,
         )
-        selected = _select_top5_with_history(candidates)
+        selected = _select_top5_with_history(
+            candidates=candidates,
+            target_coverage_ratio=target_coverage_ratio,
+            min_coverage_ratio=min_coverage_ratio,
+        )
         selected_symbols = [item.symbol for item in selected]
         effective_start = _compute_effective_common_start(selected, requested_start, requested_end)
 
         backtest.universe_json = selected_symbols
         backtest.start_ts = effective_start
 
-        params = backtest.params_json.copy()
         params["period_requested_start_ts"] = requested_start.isoformat()
         params["period_requested_end_ts"] = requested_end.isoformat()
         params["period_effective_start_ts"] = effective_start.isoformat()
         params["period_effective_end_ts"] = requested_end.isoformat()
+        params["history_target_coverage_ratio"] = target_coverage_ratio
+        params["history_min_coverage_ratio"] = min_coverage_ratio
         backtest.params_json = params
         db.commit()
 
@@ -622,8 +657,11 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                     "products: online + USDC quote",
                     "intersect with input tickers",
                     "rank by liquidity",
-                    "replace low-history pairs",
+                    f"exclude coverage below {min_coverage_ratio:.2f}",
+                    f"replace below target coverage {target_coverage_ratio:.2f}",
                 ],
+                "min_coverage_ratio": min_coverage_ratio,
+                "target_coverage_ratio": target_coverage_ratio,
             },
             "fees": {
                 "taker_fee_pct": taker_fee_pct,

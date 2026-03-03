@@ -45,6 +45,10 @@ celery_app.conf.beat_schedule = {
         "task": "app.workers.tasks.universe_selector_task",
         "schedule": 604800.0,
     },
+    "historical-backfill-every-10-min": {
+        "task": "app.workers.tasks.backfill_history_task",
+        "schedule": 600.0,
+    },
 }
 
 # Ensure all shared_task declarations are registered in this Celery app.

@@ -114,6 +114,15 @@ Input universe:
 - TOP-5 по 30d quote volume
 - Пересчёт weekly (`universe_selector_task`)
 
+Исторический backfill:
+- Фоновая задача `backfill_history_task` (каждые 10 минут) догружает историю по 5m/15m/1h.
+- По умолчанию:
+  - `BACKFILL_5M_DAYS=180` (6 месяцев),
+  - `BACKFILL_15M_DAYS=365`,
+  - `BACKFILL_1H_DAYS=730` (24 месяца),
+  - ограничение нагрузки: `BACKFILL_MAX_SYMBOLS_PER_RUN=3`, `BACKFILL_MAX_CHUNKS_PER_TF=6`.
+- Это даёт постепенный backfill на Render без перегруза API.
+
 ## Backtest defaults (обязательно)
 
 По умолчанию период backtest:
@@ -126,6 +135,7 @@ Universe selection для backtest:
 4. Ранжируем по ликвидности (24h notional/volume, иначе proxy по свечам).
 5. Выбираем TOP-5.
 6. Заменяем пары с недостаточной историей (на большую часть 24м) следующими по ликвидности с лучшим coverage, чтобы увеличить общий период данных.
+7. Пары с почти нулевой историей исключаются жёстким floor по покрытию (`history_min_coverage_ratio`, default 0.03).
 
 Execution model (default, conservative):
 - `taker-only` для всех входов/выходов.

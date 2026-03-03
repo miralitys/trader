@@ -67,6 +67,16 @@ class Settings(BaseSettings):
     taker_fee_pct: float = 0.6
     market_exit_slippage_pct: float = 0.05
 
+    backfill_5m_days: int = Field(default=180, alias="BACKFILL_5M_DAYS")
+    backfill_15m_days: int = Field(default=365, alias="BACKFILL_15M_DAYS")
+    backfill_1h_days: int = Field(default=730, alias="BACKFILL_1H_DAYS")
+    backfill_max_symbols_per_run: int = Field(
+        default=3, alias="BACKFILL_MAX_SYMBOLS_PER_RUN"
+    )
+    backfill_max_chunks_per_tf: int = Field(
+        default=6, alias="BACKFILL_MAX_CHUNKS_PER_TF"
+    )
+
     def cors_origins_list(self) -> List[str]:
         return [item.strip() for item in self.backend_cors_origins.split(",") if item.strip()]
 
