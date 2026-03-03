@@ -8,6 +8,7 @@ celery_app = Celery(
     "trader_worker",
     broker=settings.redis_url,
     backend=settings.redis_url,
+    include=["app.workers.tasks"],
 )
 
 celery_app.conf.update(
@@ -16,6 +17,7 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    imports=("app.workers.tasks",),
 )
 
 celery_app.conf.beat_schedule = {
@@ -44,3 +46,6 @@ celery_app.conf.beat_schedule = {
         "schedule": 604800.0,
     },
 }
+
+# Ensure all shared_task declarations are registered in this Celery app.
+import app.workers.tasks  # noqa: E402,F401
