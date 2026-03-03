@@ -21,11 +21,21 @@ TIMEFRAME_MAP = {
     "1d": "ONE_DAY",
 }
 
+TIMEFRAME_SECONDS = {
+    "5m": 300,
+    "15m": 900,
+    "1h": 3600,
+    "1d": 86400,
+}
+
 LOOKBACK_WINDOWS = {
     "5m": timedelta(days=5),
     "15m": timedelta(days=14),
     "1h": timedelta(days=60),
 }
+
+# Coinbase candles endpoints reject overly large ranges per request.
+MAX_CANDLES_PER_REQUEST = 300
 
 LAST_SYNC_KEY = "trader:last_data_sync"
 LAST_PRICE_PREFIX = "trader:last_price:"
@@ -117,7 +127,22 @@ def ingest_candles(db: Session, symbols: list[str]) -> dict:
             start = now - LOOKBACK_WINDOWS[tf]
             end = now
             granularity = TIMEFRAME_MAP[tf]
-            candles = coinbase_client.get_candles(instrument.product_id, granularity, start, end)
+            chunk_seconds = TIMEFRAME_SECONDS[tf] * MAX_CANDLES_PER_REQUEST
+            candles_map: dict[int, dict] = {}
+            cursor = start
+            while cursor < end:
+                next_cursor = min(cursor + timedelta(seconds=chunk_seconds), end)
+                batch = coinbase_client.get_candles(
+                    instrument.product_id,
+                    granularity,
+                    cursor,
+                    next_cursor,
+                )
+                for candle in batch:
+                    candles_map[int(candle["start"])] = candle
+                cursor = next_cursor
+
+            candles = [candles_map[k] for k in sorted(candles_map)]
             for candle in candles:
                 ts = datetime.fromtimestamp(candle["start"], tz=timezone.utc)
                 _upsert_candle(
