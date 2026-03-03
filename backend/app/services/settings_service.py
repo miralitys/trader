@@ -32,10 +32,48 @@ def create_default_settings(user_id: int) -> Setting:
     )
 
 
+def _merge_defaults(row: Setting) -> bool:
+    changed = False
+
+    risk = row.risk_params_json or {}
+    merged_risk = DEFAULT_RISK.copy()
+    merged_risk.update(risk)
+    if merged_risk != risk:
+        row.risk_params_json = merged_risk
+        changed = True
+
+    strategy = row.strategy_params_json or {}
+    merged_strategy = DEFAULT_STRATEGY.copy()
+    merged_strategy.update(strategy)
+    if merged_strategy != strategy:
+        row.strategy_params_json = merged_strategy
+        changed = True
+
+    fees = row.fees_json or {}
+    merged_fees = DEFAULT_FEES.copy()
+    merged_fees.update(fees)
+    if merged_fees != fees:
+        row.fees_json = merged_fees
+        changed = True
+
+    universe = row.universe_json or {}
+    merged_universe = _default_universe_payload()
+    merged_universe.update(universe)
+    if merged_universe != universe:
+        row.universe_json = merged_universe
+        changed = True
+
+    return changed
+
+
 def ensure_user_settings(db: Session, user_id: int) -> Setting:
     stmt = select(Setting).where(Setting.user_id == user_id)
     row = db.scalar(stmt)
     if row:
+        if _merge_defaults(row):
+            db.add(row)
+            db.commit()
+            db.refresh(row)
         return row
     row = create_default_settings(user_id)
     db.add(row)
@@ -46,7 +84,14 @@ def ensure_user_settings(db: Session, user_id: int) -> Setting:
 
 def get_system_settings(db: Session) -> Setting | None:
     stmt = select(Setting).order_by(Setting.id.asc()).limit(1)
-    return db.scalar(stmt)
+    row = db.scalar(stmt)
+    if not row:
+        return None
+    if _merge_defaults(row):
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
 
 
 def update_settings_row(row: Setting, payload: dict) -> Setting:
