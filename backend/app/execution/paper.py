@@ -47,15 +47,22 @@ def _count_trades_today(db: Session, mode: str) -> int:
 
 
 def _consecutive_losses(db: Session, mode: str, limit: int = 10) -> int:
+    day_start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
     rows = db.scalars(
         select(Trade)
-        .where(Trade.mode == mode, Trade.status == "closed")
+        .where(
+            Trade.mode == mode,
+            Trade.status == "closed",
+            Trade.closed_at.is_not(None),
+            Trade.closed_at >= day_start,
+        )
         .order_by(Trade.closed_at.desc())
         .limit(limit)
     ).all()
     losses = 0
     for trade in rows:
-        if trade.pnl < 0:
+        exit_reason = (trade.meta_json or {}).get("exit_reason")
+        if trade.pnl < 0 and exit_reason == "stop":
             losses += 1
         else:
             break
