@@ -13,7 +13,7 @@ from app.db.session import get_db
 from app.models.entities import Backtest, User
 from app.schemas.backtest import BacktestOut, BacktestRunRequest
 from app.services.backtest_service import rolling_24_month_window
-from app.workers.tasks import backtest_task
+from app.workers.celery_app import celery_app
 
 router = APIRouter(prefix="/backtests")
 
@@ -44,7 +44,18 @@ def run_backtest(
     db.commit()
     db.refresh(row)
 
-    backtest_task.delay(row.id)
+    try:
+        celery_app.send_task("app.workers.tasks.backtest_task", args=[row.id])
+    except Exception as exc:
+        row.status = "failed"
+        row.metrics_json = {"error": f"enqueue_failed: {exc}"}
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        raise HTTPException(
+            status_code=503,
+            detail="Failed to enqueue backtest task. Verify Redis and worker availability.",
+        ) from exc
     return BacktestOut.model_validate(row)
 
 
