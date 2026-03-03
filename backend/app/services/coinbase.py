@@ -110,13 +110,13 @@ class CoinbaseClient:
         return datetime.fromtimestamp(epoch, tz=timezone.utc)
 
     def get_products(self) -> list[dict[str, Any]]:
-        data = self._request("GET", "/api/v3/brokerage/products")
+        data = self._request("GET", "/api/v3/brokerage/market/products")
         products = data.get("products", [])
         return [p for p in products if p.get("quote_currency_id") == "USDC"]
 
     def get_product(self, product_id: str) -> dict[str, Any]:
-        data = self._request("GET", f"/api/v3/brokerage/products/{product_id}")
-        return data.get("product", data)
+        data = self._request("GET", f"/api/v3/brokerage/market/products/{product_id}")
+        return data
 
     def get_candles(
         self,
@@ -132,7 +132,7 @@ class CoinbaseClient:
         }
         data = self._request(
             "GET",
-            f"/api/v3/brokerage/products/{product_id}/candles",
+            f"/api/v3/brokerage/market/products/{product_id}/candles",
             params=params,
         )
         candles = data.get("candles", [])
