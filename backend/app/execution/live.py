@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.events import publish_event
 from app.models.entities import Instrument, Order, Position, Setting, Signal, Trade
-from app.risk.manager import InstrumentConstraints, RiskManager, RiskParams
+from app.risk.manager import InstrumentConstraints, RiskManager, RiskParams, evaluate_entry_edge
 from app.services.coinbase import CoinbaseCredentials, coinbase_client
 from app.services.market_data import get_last_price
 
@@ -204,6 +204,9 @@ def run_live_execution_cycle(db: Session, setting: Setting) -> dict:
             max_position_notional_pct=float(
                 setting.risk_params_json.get("max_position_notional_pct", 100.0)
             ),
+            min_profit_to_cost_ratio=float(
+                setting.risk_params_json.get("min_profit_to_cost_ratio", 1.2)
+            ),
         )
         risk = RiskManager(risk_params)
 
@@ -245,6 +248,28 @@ def run_live_execution_cycle(db: Session, setting: Setting) -> dict:
 
             mark = get_last_price(instrument.symbol) or signal.entry
             equity_est = float(setting.risk_params_json.get("initial_equity", 10000.0))
+            edge_decision = evaluate_entry_edge(
+                entry=float(signal.entry),
+                take=float(signal.take),
+                maker_fee_pct=float(setting.fees_json.get("maker_fee_pct", 0.4)),
+                taker_fee_pct=float(setting.fees_json.get("taker_fee_pct", 0.6)),
+                market_exit_slippage_pct=float(setting.fees_json.get("market_exit_slippage_pct", 0.05)),
+                min_profit_to_cost_ratio=risk_params.min_profit_to_cost_ratio,
+            )
+            if not edge_decision.allowed:
+                signal.status = "cancelled"
+                signal.meta_json = {
+                    **signal.meta_json,
+                    "live_reject_reason": edge_decision.reason,
+                    "edge_check": {
+                        "reward_pct": edge_decision.expected_reward_pct,
+                        "cost_pct": edge_decision.expected_cost_pct,
+                        "reward_to_cost_ratio": edge_decision.reward_to_cost_ratio,
+                        "required_ratio": risk_params.min_profit_to_cost_ratio,
+                    },
+                }
+                db.commit()
+                continue
 
             decision = risk.assess_entry(
                 equity=equity_est,

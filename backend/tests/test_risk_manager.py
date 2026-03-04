@@ -3,6 +3,7 @@ from app.risk.manager import (
     RiskManager,
     RiskParams,
     calculate_position_size,
+    evaluate_entry_edge,
 )
 
 
@@ -55,3 +56,29 @@ def test_position_size_is_capped_by_quote_exposure():
 
     assert qty_base == 50.0
     assert qty_quote == 5000.0
+
+
+def test_edge_filter_rejects_low_profit_to_cost_setup():
+    decision = evaluate_entry_edge(
+        entry=100.0,
+        take=100.4,  # +0.4%
+        maker_fee_pct=0.25,
+        taker_fee_pct=0.4,
+        market_exit_slippage_pct=0.05,
+        min_profit_to_cost_ratio=1.2,
+    )
+    assert decision.allowed is False
+    assert "edge_too_low" in decision.reason
+
+
+def test_edge_filter_allows_when_ratio_is_sufficient():
+    decision = evaluate_entry_edge(
+        entry=100.0,
+        take=101.2,  # +1.2%
+        maker_fee_pct=0.25,
+        taker_fee_pct=0.4,
+        market_exit_slippage_pct=0.05,
+        min_profit_to_cost_ratio=1.2,
+    )
+    assert decision.allowed is True
+    assert decision.reward_to_cost_ratio >= 1.2

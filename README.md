@@ -192,6 +192,11 @@ size_quote = equity * risk_per_trade_pct/100 / (entry - stop) * entry
 - `max_position_notional_pct` (default `100`) ограничивает quote-ношинал позиции долей от equity.
 - Это не даёт paper/live открывать позицию больше доступного капитала.
 
+Фильтр минимального edge:
+- `min_profit_to_cost_ratio` (default `1.2`) блокирует входы, где ожидаемый профит по TP
+  слишком мал относительно издержек (maker+taker+market slippage).
+- При срабатывании сигнал помечается `cancelled` с причиной в `meta_json.edge_check`.
+
 ## SSE события
 Endpoint: `GET /api/realtime/sse`
 

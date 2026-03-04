@@ -22,6 +22,7 @@ class RiskParams:
     consecutive_losses_pause: int = 2
     max_drawdown_pct: float = 10.0
     max_position_notional_pct: float = 100.0
+    min_profit_to_cost_ratio: float = 1.2
 
 
 @dataclass
@@ -30,6 +31,15 @@ class RiskDecision:
     reason: str
     qty_base: float = 0.0
     qty_quote: float = 0.0
+
+
+@dataclass
+class EdgeDecision:
+    allowed: bool
+    reason: str
+    expected_reward_pct: float = 0.0
+    expected_cost_pct: float = 0.0
+    reward_to_cost_ratio: float = 0.0
 
 
 def round_down_to_increment(value: float, increment: float) -> float:
@@ -63,6 +73,55 @@ def calculate_position_size(
 
     qty_quote = qty_base * entry
     return qty_base, qty_quote
+
+
+def evaluate_entry_edge(
+    *,
+    entry: float,
+    take: float,
+    maker_fee_pct: float,
+    taker_fee_pct: float,
+    market_exit_slippage_pct: float,
+    min_profit_to_cost_ratio: float,
+) -> EdgeDecision:
+    if entry <= 0:
+        return EdgeDecision(False, "invalid_entry_price")
+    if take <= entry:
+        return EdgeDecision(False, "non_positive_take_distance")
+
+    expected_reward_pct = ((take - entry) / entry) * 100.0
+    expected_cost_pct = max(0.0, maker_fee_pct) + max(0.0, taker_fee_pct) + max(
+        0.0, market_exit_slippage_pct
+    )
+    if expected_cost_pct <= 0:
+        return EdgeDecision(
+            True,
+            "ok",
+            expected_reward_pct=expected_reward_pct,
+            expected_cost_pct=expected_cost_pct,
+            reward_to_cost_ratio=float("inf"),
+        )
+
+    ratio = expected_reward_pct / expected_cost_pct
+    if min_profit_to_cost_ratio > 0 and ratio < min_profit_to_cost_ratio:
+        return EdgeDecision(
+            False,
+            (
+                f"edge_too_low ratio={ratio:.3f} "
+                f"(reward_pct={expected_reward_pct:.3f}, cost_pct={expected_cost_pct:.3f})"
+            ),
+            expected_reward_pct=expected_reward_pct,
+            expected_cost_pct=expected_cost_pct,
+            reward_to_cost_ratio=ratio,
+        )
+
+    return EdgeDecision(
+        True,
+        "ok",
+        expected_reward_pct=expected_reward_pct,
+        expected_cost_pct=expected_cost_pct,
+        reward_to_cost_ratio=ratio,
+    )
 
 
 class RiskManager:

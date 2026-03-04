@@ -19,6 +19,7 @@ DEFAULT_RISK = {
     "max_drawdown_pct": 10.0,
     "strict_mode_action": "pause",
     "max_position_notional_pct": 100.0,
+    "min_profit_to_cost_ratio": 1.2,
 }
 
 DEFAULT_STRATEGY = {
