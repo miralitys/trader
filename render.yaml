@@ -17,7 +17,7 @@ services:
     rootDir: backend
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: sh -c "if [ -d backend ]; then cd backend; fi; python -m uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+    startCommand: sh ./scripts/start_web.sh
     healthCheckPath: /
     envVars:
       - key: PYTHON_VERSION
@@ -72,7 +72,7 @@ services:
     rootDir: backend
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: sh -c "if [ -d backend ]; then cd backend; fi; python ./scripts/run_worker.py"
+    startCommand: sh ./scripts/start_worker.sh
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
