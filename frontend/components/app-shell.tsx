@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 
 import { LoginForm } from '@/components/login-form'
 import { Sidebar } from '@/components/sidebar'
-import { clearToken, getToken } from '@/lib/auth'
+import { AUTH_EXPIRED_EVENT, clearToken, getToken } from '@/lib/auth'
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [authenticated, setAuthenticated] = useState(false)
@@ -15,6 +15,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     setAuthenticated(Boolean(getToken()))
   }, [pathname])
+
+  useEffect(() => {
+    const onAuthExpired = () => {
+      clearToken()
+      setAuthenticated(false)
+      router.push('/overview')
+    }
+    window.addEventListener(AUTH_EXPIRED_EVENT, onAuthExpired)
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onAuthExpired)
+  }, [router])
 
   if (!authenticated) {
     return <LoginForm onAuthenticated={() => setAuthenticated(true)} />

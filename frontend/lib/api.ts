@@ -1,6 +1,6 @@
 'use client'
 
-import { getToken } from './auth'
+import { clearToken, getToken, notifyAuthExpired } from './auth'
 
 // Always use same-origin API routes from the browser.
 // Next.js handles forwarding to backend in app/api/[...path]/route.ts.
@@ -24,6 +24,10 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   })
 
   if (!resp.ok) {
+    if (resp.status === 401) {
+      clearToken()
+      notifyAuthExpired()
+    }
     const text = await resp.text()
     throw new Error(text || `Request failed: ${resp.status}`)
   }

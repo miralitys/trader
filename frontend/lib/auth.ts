@@ -1,6 +1,7 @@
 'use client'
 
 const TOKEN_KEY = 'trader_token'
+export const AUTH_EXPIRED_EVENT = 'trader_auth_expired'
 
 export function getToken(): string | null {
   if (typeof window === 'undefined') return null
@@ -15,4 +16,9 @@ export function setToken(token: string): void {
 export function clearToken(): void {
   if (typeof window === 'undefined') return
   window.localStorage.removeItem(TOKEN_KEY)
+}
+
+export function notifyAuthExpired(): void {
+  if (typeof window === 'undefined') return
+  window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
 }
