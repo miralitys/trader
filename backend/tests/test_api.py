@@ -48,8 +48,8 @@ def test_settings_include_breakout_retest_2_preset(client, auth_header):
 
     assert target is not None
     assert target["base_strategy"] == "StrategyBreakoutRetest"
-    assert target["backtest_params"]["history_min_coverage_ratio"] == 0.01
-    assert target["backtest_params"]["history_target_coverage_ratio"] == 0.01
+    assert target["backtest_params"]["history_min_coverage_ratio"] == 0.005
+    assert target["backtest_params"]["history_target_coverage_ratio"] == 0.005
     for ticker in ["BTC", "ETH", "SOL", "XRP", "ADA"]:
         assert ticker in target["backtest_params"]["input_tickers"]
 

@@ -71,8 +71,8 @@ DEFAULT_STRATEGY = {
             "name": "StrategyBreakoutRetest 2",
             "base_strategy": "StrategyBreakoutRetest",
             "backtest_params": {
-                "history_min_coverage_ratio": 0.01,
-                "history_target_coverage_ratio": 0.01,
+                "history_min_coverage_ratio": 0.005,
+                "history_target_coverage_ratio": 0.005,
                 "input_tickers": _DEFAULT_BREAKOUT_RETEST_2_TICKERS,
             },
         }

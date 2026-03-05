@@ -100,14 +100,14 @@ function resolveSelection(
 ): { strategy: string; params: Record<string, unknown> } {
   if (selection === BREAKOUT_RETEST_2_SELECTION) {
     return {
-      strategy: STRATEGY_BREAKOUT_RETEST_2,
-      params: {
-        strategy_base_strategy: 'StrategyBreakoutRetest',
-        history_min_coverage_ratio: 0.01,
-        history_target_coverage_ratio: 0.01,
-        input_tickers: BREAKOUT_RETEST_2_TICKERS
+        strategy: STRATEGY_BREAKOUT_RETEST_2,
+        params: {
+          strategy_base_strategy: 'StrategyBreakoutRetest',
+          history_min_coverage_ratio: 0.005,
+          history_target_coverage_ratio: 0.005,
+          input_tickers: BREAKOUT_RETEST_2_TICKERS
+        }
       }
-    }
   }
 
   const presetName = parsePresetOptionValue(selection)
