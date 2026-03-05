@@ -1,4 +1,8 @@
-export type BaseStrategy = 'StrategyBreakoutRetest' | 'StrategyPullbackToTrend' | 'MeanReversionHardStop'
+export type BaseStrategy =
+  | 'StrategyBreakoutRetest'
+  | 'StrategyPullbackToTrend'
+  | 'MeanReversionHardStop'
+  | 'StrategyTrendRetrace70'
 
 export type StrategyBacktestParams = {
   history_min_coverage_ratio?: number
@@ -15,7 +19,8 @@ export type StrategyPreset = {
 export const BUILTIN_STRATEGY_OPTIONS: Array<{ value: BaseStrategy; label: string }> = [
   { value: 'StrategyBreakoutRetest', label: 'BreakoutRetest' },
   { value: 'StrategyPullbackToTrend', label: 'PullbackToTrend' },
-  { value: 'MeanReversionHardStop', label: 'MeanReversionHardStop' }
+  { value: 'MeanReversionHardStop', label: 'MeanReversionHardStop' },
+  { value: 'StrategyTrendRetrace70', label: 'TrendRetrace70' }
 ]
 
 const BUILTIN_STRATEGY_LABELS: Record<BaseStrategy, string> = BUILTIN_STRATEGY_OPTIONS.reduce(

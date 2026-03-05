@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.strategies.breakout_retest import generate_breakout_retest_signal
 from app.strategies.mean_reversion_hard_stop import generate_mean_reversion_hard_stop_signal
+from app.strategies.trend_retrace_70 import generate_trend_retrace_70_signal
 from app.strategies.types import CandleData
 
 
@@ -82,3 +83,58 @@ def test_no_lookahead_mean_reversion_triggers_only_after_confirmation_close():
         regime_meta={"ema200_slope": 0.1},
     )
     assert after_trigger is not None
+
+
+def test_no_lookahead_trend_retrace_70_requires_reclaim_candle():
+    now = datetime.now(timezone.utc)
+    candles: list[CandleData] = []
+
+    for i in range(320):
+        p = 80 + i * 0.10
+        candles.append(
+            CandleData(
+                ts=now + timedelta(minutes=5 * i),
+                open=p - 0.05,
+                high=p + 0.20,
+                low=p - 0.20,
+                close=p,
+                volume=120 + i,
+            )
+        )
+
+    # Create pullback bars while keeping last close below reclaim threshold.
+    for i in range(-10, 0):
+        c = candles[i]
+        candles[i] = CandleData(
+            ts=c.ts,
+            open=c.open - 1.6,
+            high=c.high - 0.6,
+            low=c.low - 2.1,
+            close=c.close - 1.8,
+            volume=c.volume * 1.08,
+        )
+
+    # Keep the latest candle below reclaim threshold.
+    latest = candles[-1]
+    candles[-1] = CandleData(
+        ts=latest.ts,
+        open=latest.open - 1.5,
+        high=latest.high - 0.7,
+        low=latest.low - 2.2,
+        close=latest.close - 2.0,
+        volume=latest.volume * 1.2,
+    )
+
+    before_reclaim = generate_trend_retrace_70_signal(candles, rsi_max=95.0)
+    assert before_reclaim is None
+
+    reclaim = CandleData(
+        ts=now + timedelta(minutes=5 * 320),
+        open=candles[-1].close + 0.1,
+        high=candles[-1].close + 2.6,
+        low=candles[-1].close - 0.2,
+        close=candles[-1].close + 2.2,
+        volume=candles[-1].volume * 1.8,
+    )
+    after_reclaim = generate_trend_retrace_70_signal(candles + [reclaim], rsi_max=95.0)
+    assert after_reclaim is not None

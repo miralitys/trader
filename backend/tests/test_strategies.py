@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from app.strategies.breakout_retest import generate_breakout_retest_signal
 from app.strategies.mean_reversion_hard_stop import generate_mean_reversion_hard_stop_signal
 from app.strategies.pullback_trend import generate_pullback_signal
+from app.strategies.trend_retrace_70 import generate_trend_retrace_70_signal
 from app.strategies.types import CandleData
 
 
@@ -189,3 +190,47 @@ def test_mean_reversion_hard_stop_skips_when_stop_too_far():
         regime_meta={"ema200_slope": 0.1},
     )
     assert signal is None
+
+
+def test_trend_retrace_70_signal_generation():
+    candles = _trend_candles(base_price=85.0, n=320, step=0.11)
+
+    # Simulate a shallow pullback under EMA20.
+    for i in range(-10, 0):
+        c = candles[i]
+        candles[i] = CandleData(
+            ts=c.ts,
+            open=c.open - 1.8,
+            high=c.high - 0.6,
+            low=c.low - 2.0,
+            close=c.close - 1.7,
+            volume=c.volume * 1.08,
+        )
+
+    # Force penultimate bar to remain below EMA20 before reclaim.
+    penultimate = candles[-2]
+    candles[-2] = CandleData(
+        ts=penultimate.ts,
+        open=penultimate.open - 2.5,
+        high=penultimate.high - 1.0,
+        low=penultimate.low - 2.6,
+        close=penultimate.close - 3.0,
+        volume=penultimate.volume * 1.15,
+    )
+
+    # Reclaim candle with volume support.
+    last = candles[-1]
+    candles[-1] = CandleData(
+        ts=last.ts,
+        open=last.open - 0.3,
+        high=last.high + 1.6,
+        low=last.low - 0.2,
+        close=last.close + 2.2,
+        volume=last.volume * 2.0,
+    )
+
+    signal = generate_trend_retrace_70_signal(candles, rsi_max=95.0)
+    assert signal is not None
+    assert signal.strategy == "StrategyTrendRetrace70"
+    assert signal.signal == "long"
+    assert signal.take > signal.entry > signal.stop

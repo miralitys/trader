@@ -54,6 +54,22 @@ def test_settings_include_breakout_retest_2_preset(client, auth_header):
         assert ticker in target["backtest_params"]["input_tickers"]
 
 
+def test_settings_include_trend_retrace_70_preset(client, auth_header):
+    resp = client.get("/api/settings", headers=auth_header)
+    assert resp.status_code == 200
+
+    strategy_params = resp.json()["strategy_params_json"]
+    presets = strategy_params.get("strategy_presets", [])
+    target = next((item for item in presets if item.get("name") == "StrategyTrendRetrace70"), None)
+
+    assert target is not None
+    assert target["base_strategy"] == "StrategyTrendRetrace70"
+    assert target["backtest_params"]["history_min_coverage_ratio"] == 0.005
+    assert target["backtest_params"]["history_target_coverage_ratio"] == 0.005
+    for ticker in ["BTC", "ETH", "SOL", "XRP", "ADA"]:
+        assert ticker in target["backtest_params"]["input_tickers"]
+
+
 def test_candles_endpoint(client, auth_header, db_session):
     instrument = Instrument(
         symbol="BTC-USDC",

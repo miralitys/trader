@@ -65,6 +65,20 @@ DEFAULT_STRATEGY = {
     "mr_stop_atr_buffer": 0.2,
     "mr_max_stop_pct": 0.03,
     "mr_tp_rr": 1.2,
+    "tr70_ema_fast_period": 20,
+    "tr70_ema_mid_period": 50,
+    "tr70_ema_slow_period": 200,
+    "tr70_pullback_lookback": 10,
+    "tr70_pullback_depth_pct": 0.35,
+    "tr70_reclaim_buffer_pct": 0.05,
+    "tr70_rsi_period": 14,
+    "tr70_rsi_min": 42.0,
+    "tr70_rsi_max": 62.0,
+    "tr70_stop_atr_mult": 0.7,
+    "tr70_min_stop_pct": 0.7,
+    "tr70_max_stop_pct": 1.8,
+    "tr70_tp_rr": 2.1,
+    "tr70_min_volume_ratio": 0.8,
     "trade_only_strategy": "both",
     "strategy_presets": [
         {
@@ -75,7 +89,16 @@ DEFAULT_STRATEGY = {
                 "history_target_coverage_ratio": 0.005,
                 "input_tickers": _DEFAULT_BREAKOUT_RETEST_2_TICKERS,
             },
-        }
+        },
+        {
+            "name": "StrategyTrendRetrace70",
+            "base_strategy": "StrategyTrendRetrace70",
+            "backtest_params": {
+                "history_min_coverage_ratio": 0.005,
+                "history_target_coverage_ratio": 0.005,
+                "input_tickers": _DEFAULT_BREAKOUT_RETEST_2_TICKERS,
+            },
+        },
     ],
 }
 
