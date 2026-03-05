@@ -72,7 +72,7 @@ services:
     rootDir: backend
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: sh -c "until alembic upgrade head; do sleep 5; done; celery -A app.workers.celery_app.celery_app worker --beat --loglevel=info --concurrency=2"
+    startCommand: ./scripts/start_worker.sh
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
