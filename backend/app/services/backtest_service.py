@@ -23,6 +23,10 @@ DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT = 0.20
 DEFAULT_BACKTEST_TAKER_FEE_PCT = 0.60
 DEFAULT_HISTORY_TARGET_COVERAGE_RATIO = 0.20
 DEFAULT_HISTORY_MIN_COVERAGE_RATIO = 0.03
+STRATEGY_BREAKOUT_RETEST_2 = "StrategyBreakoutRetest 2"
+BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO = 0.01
+BREAKOUT_RETEST_2_TARGET_COVERAGE_RATIO = 0.01
+BREAKOUT_RETEST_2_EXTRA_TICKERS = ["BTC", "ETH", "SOL", "XRP", "ADA"]
 SUPPORTED_BACKTEST_STRATEGIES = {
     "StrategyBreakoutRetest",
     "StrategyPullbackToTrend",
@@ -108,6 +112,9 @@ def _resolve_runtime_strategy(backtest: Backtest) -> str:
     requested_base = params.get("strategy_base_strategy")
     if isinstance(requested_base, str) and requested_base in SUPPORTED_BACKTEST_STRATEGIES:
         return requested_base
+
+    if backtest.strategy == STRATEGY_BREAKOUT_RETEST_2:
+        return "StrategyBreakoutRetest"
 
     if backtest.strategy in SUPPORTED_BACKTEST_STRATEGIES:
         return backtest.strategy
@@ -605,6 +612,24 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         params = backtest.params_json.copy()
         requested_strategy = backtest.strategy
         runtime_strategy = _resolve_runtime_strategy(backtest)
+
+        if requested_strategy == STRATEGY_BREAKOUT_RETEST_2:
+            if (
+                "history_min_coverage_ratio" not in params
+                and "min_coverage_ratio" not in params
+            ):
+                params["history_min_coverage_ratio"] = BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO
+            if (
+                "history_target_coverage_ratio" not in params
+                and "target_coverage_ratio" not in params
+            ):
+                params["history_target_coverage_ratio"] = BREAKOUT_RETEST_2_TARGET_COVERAGE_RATIO
+            if "input_tickers" not in params:
+                merged_tickers = _normalize_input_tickers(
+                    BREAKOUT_RETEST_2_EXTRA_TICKERS + list(DEFAULT_UNIVERSE_INPUT)
+                )
+                params["input_tickers"] = merged_tickers
+            params.setdefault("strategy_base_strategy", "StrategyBreakoutRetest")
 
         target_coverage_ratio = _to_float(
             params.get("history_target_coverage_ratio", params.get("target_coverage_ratio")),

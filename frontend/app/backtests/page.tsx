@@ -30,6 +30,34 @@ type SettingsForBacktests = {
 }
 
 const DEFAULT_STRATEGY_SELECTION = 'builtin:StrategyBreakoutRetest'
+const STRATEGY_BREAKOUT_RETEST_2 = 'StrategyBreakoutRetest 2'
+const BREAKOUT_RETEST_2_SELECTION = 'profile:StrategyBreakoutRetest2'
+const BREAKOUT_RETEST_2_TICKERS = [
+  'BTC',
+  'ETH',
+  'SOL',
+  'XRP',
+  'ADA',
+  'DYDX',
+  'INJ',
+  'ICP',
+  'GALA',
+  'AXS',
+  'TRB',
+  'ONDO',
+  'IOTA',
+  'NOT',
+  'FIL',
+  'NEO',
+  'ENJ',
+  'HYPE',
+  'STRK',
+  'SLP',
+  'ONE',
+  'MINA',
+  'RVN',
+  'RUNE'
+]
 
 function EquityMiniChart({ points }: { points: Array<{ ts: string; equity: number }> }) {
   const id = useMemo(() => `equity-${Math.random().toString(36).slice(2)}`, [])
@@ -70,6 +98,18 @@ function resolveSelection(
   selection: string,
   presets: StrategyPreset[]
 ): { strategy: string; params: Record<string, unknown> } {
+  if (selection === BREAKOUT_RETEST_2_SELECTION) {
+    return {
+      strategy: STRATEGY_BREAKOUT_RETEST_2,
+      params: {
+        strategy_base_strategy: 'StrategyBreakoutRetest',
+        history_min_coverage_ratio: 0.01,
+        history_target_coverage_ratio: 0.01,
+        input_tickers: BREAKOUT_RETEST_2_TICKERS
+      }
+    }
+  }
+
   const presetName = parsePresetOptionValue(selection)
   if (presetName) {
     const preset = presets.find((item) => item.name === presetName)
@@ -109,6 +149,10 @@ function resolveSelection(
 }
 
 function displayStrategy(row: Backtest): string {
+  if (row.strategy === STRATEGY_BREAKOUT_RETEST_2) {
+    return STRATEGY_BREAKOUT_RETEST_2
+  }
+
   const baseFromParams = row.params_json?.strategy_base_strategy
   if (isBaseStrategy(baseFromParams)) {
     return `${row.strategy} (${strategyLabel(baseFromParams)})`
@@ -225,6 +269,7 @@ export default function BacktestsPage() {
                 {option.label}
               </option>
             ))}
+            <option value={BREAKOUT_RETEST_2_SELECTION}>{STRATEGY_BREAKOUT_RETEST_2}</option>
             {strategyPresets.length ? (
               <optgroup label="Presets from Settings">
                 {strategyPresets.map((preset) => (
