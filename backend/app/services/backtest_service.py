@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from itertools import product
 from typing import Any
 
 from sqlalchemy import func, select
@@ -27,6 +28,9 @@ STRATEGY_BREAKOUT_RETEST_2 = "StrategyBreakoutRetest 2"
 BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO = 0.005
 BREAKOUT_RETEST_2_TARGET_COVERAGE_RATIO = 0.005
 BREAKOUT_RETEST_2_EXTRA_TICKERS = ["BTC", "ETH", "SOL", "XRP", "ADA"]
+BREAKOUT_RETEST_2_TARGET_WINRATE = 0.70
+BREAKOUT_RETEST_2_TARGET_PF = 1.00
+BREAKOUT_RETEST_2_MIN_TRADES_FOR_TARGET = 20
 SUPPORTED_BACKTEST_STRATEGIES = {
     "StrategyBreakoutRetest",
     "StrategyPullbackToTrend",
@@ -90,6 +94,10 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _format_ratio(value: float) -> str:
+    return f"{value:.3f}".rstrip("0").rstrip(".")
 
 
 def _normalize_input_tickers(value: Any) -> list[str]:
@@ -435,6 +443,10 @@ def _simulate_raw_trades_for_symbol(
                 window,
                 lookback=int(params.get("breakout_lookback", 20)),
                 retest_k_atr=_to_float(params.get("breakout_retest_k_atr"), 0.3),
+                stop_atr_mult=_to_float(params.get("breakout_stop_atr_mult"), 1.0),
+                tp_rr=_to_float(params.get("breakout_tp_rr"), 2.0),
+                min_volume_ratio=_to_float(params.get("breakout_min_volume_ratio"), 0.0),
+                min_confidence=_to_float(params.get("breakout_min_confidence"), 0.0),
             )
 
         if not signal:
@@ -499,6 +511,192 @@ def _simulate_raw_trades_for_symbol(
         i = max(i + 1, j)
 
     return trades
+
+
+def _simulate_raw_trades_for_symbols(
+    selected_symbols: list[str],
+    candles_5m_by_symbol: dict[str, list[CandleData]],
+    strategy: str,
+    max_hold_hours: int,
+    strategy_params: dict,
+    candles_1h_by_symbol: dict[str, list[CandleData]] | None = None,
+) -> list[RawTrade]:
+    raw_trades: list[RawTrade] = []
+    hourly = candles_1h_by_symbol or {}
+
+    for symbol in selected_symbols:
+        candles_5m = candles_5m_by_symbol.get(symbol, [])
+        if len(candles_5m) < 100:
+            continue
+        symbol_trades = _simulate_raw_trades_for_symbol(
+            symbol=symbol,
+            candles_5m=candles_5m,
+            strategy=strategy,
+            max_hold_hours=max_hold_hours,
+            strategy_params=strategy_params,
+            candles_1h=hourly.get(symbol, []),
+        )
+        raw_trades.extend(symbol_trades)
+
+    raw_trades.sort(key=lambda x: x.exit_ts)
+    return raw_trades
+
+
+def _optimize_breakout_retest_2(
+    selected_symbols: list[str],
+    candles_5m_by_symbol: dict[str, list[CandleData]],
+    max_hold_hours: int,
+    strategy_params: dict,
+    taker_fee_pct: float,
+    entry_slippage_pct: float,
+    exit_slippage_pct: float,
+    stop_slippage_pct: float,
+    initial_equity: float,
+) -> tuple[list[RawTrade], dict]:
+    lookback_values = [20, 30, 40]
+    retest_values = [0.2, 0.4, 0.7]
+    stop_mult_values = [0.8, 1.0, 1.3]
+    tp_rr_values = [0.7, 1.0, 1.3]
+    min_volume_values = [0.0, 1.0, 1.25]
+    min_conf_values = [0.0, 0.55, 0.65, 0.75]
+
+    candidate_count = 0
+    best_raw: list[RawTrade] = []
+    best_rank: tuple[float, float, float, float, float] | None = None
+    best_details: dict[str, Any] = {}
+
+    for (
+        breakout_lookback,
+        breakout_retest_k_atr,
+        breakout_stop_atr_mult,
+        breakout_tp_rr,
+        breakout_min_volume_ratio,
+        breakout_min_confidence,
+    ) in product(
+        lookback_values,
+        retest_values,
+        stop_mult_values,
+        tp_rr_values,
+        min_volume_values,
+        min_conf_values,
+    ):
+        candidate_count += 1
+        candidate_params = strategy_params.copy()
+        candidate_params.update(
+            {
+                "breakout_lookback": breakout_lookback,
+                "breakout_retest_k_atr": breakout_retest_k_atr,
+                "breakout_stop_atr_mult": breakout_stop_atr_mult,
+                "breakout_tp_rr": breakout_tp_rr,
+                "breakout_min_volume_ratio": breakout_min_volume_ratio,
+                "breakout_min_confidence": breakout_min_confidence,
+            }
+        )
+
+        raw_trades = _simulate_raw_trades_for_symbols(
+            selected_symbols=selected_symbols,
+            candles_5m_by_symbol=candles_5m_by_symbol,
+            strategy="StrategyBreakoutRetest",
+            max_hold_hours=max_hold_hours,
+            strategy_params=candidate_params,
+        )
+        if not raw_trades:
+            continue
+
+        sim = _apply_execution_assumptions(
+            raw_trades=raw_trades,
+            taker_fee_pct=taker_fee_pct,
+            entry_slippage_pct=entry_slippage_pct,
+            exit_slippage_pct=exit_slippage_pct,
+            stop_slippage_pct=stop_slippage_pct,
+            multiplier=1.0,
+        )
+        metrics, _ = _build_metrics(sim, initial_equity)
+        trades_count = int(metrics.get("trades", 0))
+        if trades_count <= 0:
+            continue
+
+        winrate = float(metrics.get("winrate", 0.0))
+        profit_factor = float(metrics.get("profit_factor", 0.0))
+        meets_target = (
+            profit_factor > BREAKOUT_RETEST_2_TARGET_PF
+            and winrate >= BREAKOUT_RETEST_2_TARGET_WINRATE
+        )
+        meets_target_with_min_trades = meets_target and trades_count >= BREAKOUT_RETEST_2_MIN_TRADES_FOR_TARGET
+
+        if meets_target_with_min_trades:
+            rank = (3.0, profit_factor, winrate, float(trades_count), 0.0)
+        elif meets_target:
+            rank = (2.0, profit_factor, winrate, float(trades_count), 0.0)
+        else:
+            rank = (
+                1.0,
+                profit_factor * winrate,
+                winrate,
+                profit_factor,
+                float(trades_count),
+            )
+
+        if best_rank is None or rank > best_rank:
+            best_rank = rank
+            best_raw = raw_trades
+            best_details = {
+                "config": {
+                    "breakout_lookback": breakout_lookback,
+                    "breakout_retest_k_atr": breakout_retest_k_atr,
+                    "breakout_stop_atr_mult": breakout_stop_atr_mult,
+                    "breakout_tp_rr": breakout_tp_rr,
+                    "breakout_min_volume_ratio": breakout_min_volume_ratio,
+                    "breakout_min_confidence": breakout_min_confidence,
+                },
+                "base_metrics": metrics,
+                "meets_target": meets_target,
+                "meets_target_with_min_trades": meets_target_with_min_trades,
+            }
+
+    if best_rank is None:
+        fallback_raw = _simulate_raw_trades_for_symbols(
+            selected_symbols=selected_symbols,
+            candles_5m_by_symbol=candles_5m_by_symbol,
+            strategy="StrategyBreakoutRetest",
+            max_hold_hours=max_hold_hours,
+            strategy_params=strategy_params,
+        )
+        fallback_sim = _apply_execution_assumptions(
+            raw_trades=fallback_raw,
+            taker_fee_pct=taker_fee_pct,
+            entry_slippage_pct=entry_slippage_pct,
+            exit_slippage_pct=exit_slippage_pct,
+            stop_slippage_pct=stop_slippage_pct,
+            multiplier=1.0,
+        )
+        fallback_metrics, _ = _build_metrics(fallback_sim, initial_equity)
+        return fallback_raw, {
+            "enabled": True,
+            "target": {
+                "profit_factor_gt": BREAKOUT_RETEST_2_TARGET_PF,
+                "winrate_gte": BREAKOUT_RETEST_2_TARGET_WINRATE,
+                "min_trades_for_target": BREAKOUT_RETEST_2_MIN_TRADES_FOR_TARGET,
+            },
+            "candidate_count": candidate_count,
+            "target_met": False,
+            "chosen_config": "default_strategy_params",
+            "chosen_base_metrics": fallback_metrics,
+        }
+
+    return best_raw, {
+        "enabled": True,
+        "target": {
+            "profit_factor_gt": BREAKOUT_RETEST_2_TARGET_PF,
+            "winrate_gte": BREAKOUT_RETEST_2_TARGET_WINRATE,
+            "min_trades_for_target": BREAKOUT_RETEST_2_MIN_TRADES_FOR_TARGET,
+        },
+        "candidate_count": candidate_count,
+        "target_met": bool(best_details.get("meets_target_with_min_trades")),
+        "target_met_relaxed": bool(best_details.get("meets_target")),
+        "chosen_config": best_details.get("config"),
+        "chosen_base_metrics": best_details.get("base_metrics"),
+    }
 
 
 def _apply_execution_assumptions(
@@ -674,9 +872,8 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         db.commit()
 
         max_hold_hours = int(backtest.params_json.get("max_hold_hours", 72))
-        strategy_params = setting.strategy_params_json if setting else {}
-
-        raw_trades: list[RawTrade] = []
+        strategy_params = (setting.strategy_params_json.copy() if setting else {})
+        optimization_meta: dict[str, Any] | None = None
         data_availability_report: list[dict] = []
 
         for candidate in candidates:
@@ -693,6 +890,9 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                 }
             )
 
+        candles_5m_by_symbol: dict[str, list[CandleData]] = {}
+        candles_1h_by_symbol: dict[str, list[CandleData]] = {}
+
         for symbol in selected_symbols:
             instrument = db.scalar(select(Instrument).where(Instrument.symbol == symbol))
             if not instrument:
@@ -707,10 +907,10 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             )
             if len(candles_5m) < 100:
                 continue
+            candles_5m_by_symbol[symbol] = candles_5m
 
-            candles_1h: list[CandleData] = []
             if runtime_strategy == "MeanReversionHardStop":
-                candles_1h = _load_candles(
+                candles_1h_by_symbol[symbol] = _load_candles(
                     db,
                     instrument.id,
                     "1h",
@@ -718,17 +918,46 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                     requested_end,
                 )
 
-            symbol_trades = _simulate_raw_trades_for_symbol(
-                symbol=symbol,
-                candles_5m=candles_5m,
+        if requested_strategy == STRATEGY_BREAKOUT_RETEST_2 and runtime_strategy == "StrategyBreakoutRetest":
+            raw_trades, optimization_meta = _optimize_breakout_retest_2(
+                selected_symbols=selected_symbols,
+                candles_5m_by_symbol=candles_5m_by_symbol,
+                max_hold_hours=max_hold_hours,
+                strategy_params=strategy_params,
+                taker_fee_pct=_to_float((setting.fees_json if setting else {}).get("taker_fee_pct"), DEFAULT_BACKTEST_TAKER_FEE_PCT),
+                entry_slippage_pct=_to_float((setting.fees_json if setting else {}).get("backtest_entry_slippage_pct"), DEFAULT_BACKTEST_ENTRY_SLIPPAGE_PCT),
+                exit_slippage_pct=_to_float((setting.fees_json if setting else {}).get("backtest_exit_slippage_pct"), DEFAULT_BACKTEST_EXIT_SLIPPAGE_PCT),
+                stop_slippage_pct=_to_float((setting.fees_json if setting else {}).get("backtest_stop_slippage_pct"), DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT),
+                initial_equity=_to_float(backtest.params_json.get("initial_equity"), DEFAULT_BACKTEST_INITIAL_EQUITY),
+            )
+            chosen_config = optimization_meta.get("chosen_config") if optimization_meta else None
+            if isinstance(chosen_config, dict):
+                strategy_params.update(chosen_config)
+        else:
+            raw_trades = _simulate_raw_trades_for_symbols(
+                selected_symbols=selected_symbols,
+                candles_5m_by_symbol=candles_5m_by_symbol,
                 strategy=runtime_strategy,
                 max_hold_hours=max_hold_hours,
                 strategy_params=strategy_params,
-                candles_1h=candles_1h,
+                candles_1h_by_symbol=candles_1h_by_symbol,
             )
-            raw_trades.extend(symbol_trades)
 
-        raw_trades.sort(key=lambda x: x.exit_ts)
+        if requested_strategy == STRATEGY_BREAKOUT_RETEST_2:
+            params["strategy_profile_params_applied"] = {
+                key: strategy_params.get(key)
+                for key in (
+                    "breakout_lookback",
+                    "breakout_retest_k_atr",
+                    "breakout_stop_atr_mult",
+                    "breakout_tp_rr",
+                    "breakout_min_volume_ratio",
+                    "breakout_min_confidence",
+                )
+                if key in strategy_params
+            }
+            backtest.params_json = params
+            db.commit()
 
         fees_json = setting.fees_json if setting else {}
         taker_fee_pct = _to_float(fees_json.get("taker_fee_pct"), DEFAULT_BACKTEST_TAKER_FEE_PCT)
@@ -793,8 +1022,8 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                     "products: online + USDC quote",
                     "intersect with input tickers",
                     "rank by liquidity",
-                    f"exclude coverage below {min_coverage_ratio:.2f}",
-                    f"replace below target coverage {target_coverage_ratio:.2f}",
+                    f"exclude coverage below {_format_ratio(min_coverage_ratio)}",
+                    f"replace below target coverage {_format_ratio(target_coverage_ratio)}",
                 ],
                 "min_coverage_ratio": min_coverage_ratio,
                 "target_coverage_ratio": target_coverage_ratio,
@@ -813,6 +1042,8 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             "lookahead": "disabled",
             "data_availability": "see metrics_json.data_availability",
         }
+        if optimization_meta:
+            assumptions["strategy_optimization"] = optimization_meta
 
         base_metrics = scenario_metrics.get("base", {})
         metrics_json = {
