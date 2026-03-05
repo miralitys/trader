@@ -32,6 +32,7 @@ type SettingsForBacktests = {
 const DEFAULT_STRATEGY_SELECTION = 'builtin:StrategyBreakoutRetest'
 const STRATEGY_BREAKOUT_RETEST_2 = 'StrategyBreakoutRetest 2'
 const BREAKOUT_RETEST_2_SELECTION = 'profile:StrategyBreakoutRetest2'
+const BACKTEST_STALE_TIMEOUT_MINUTES = 60
 const BREAKOUT_RETEST_2_TICKERS = [
   'BTC',
   'ETH',
@@ -165,6 +166,20 @@ function displayStrategy(row: Backtest): string {
   return row.strategy
 }
 
+function minutesSince(isoTs: string, nowMs: number): number {
+  const tsMs = new Date(isoTs).getTime()
+  if (!Number.isFinite(tsMs)) return 0
+  return Math.max(0, Math.floor((nowMs - tsMs) / 60000))
+}
+
+function formatDurationMinutes(totalMinutes: number): string {
+  const clamped = Math.max(0, Math.floor(totalMinutes))
+  const hours = Math.floor(clamped / 60)
+  const minutes = clamped % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  return `${minutes}m`
+}
+
 export default function BacktestsPage() {
   const defaultEnd = new Date()
   const defaultStart = new Date(defaultEnd)
@@ -174,6 +189,8 @@ export default function BacktestsPage() {
   const [selected, setSelected] = useState<Backtest | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  const [lastBacktestsRefreshAt, setLastBacktestsRefreshAt] = useState<number | null>(null)
   const [strategySelection, setStrategySelection] = useState(DEFAULT_STRATEGY_SELECTION)
   const [strategyPresets, setStrategyPresets] = useState<StrategyPreset[]>([])
   const [startTs, setStartTs] = useState(defaultStart.toISOString())
@@ -188,6 +205,9 @@ export default function BacktestsPage() {
   async function loadBacktests() {
     try {
       const data = await apiFetch<Backtest[]>('/api/backtests')
+      const refreshedAt = Date.now()
+      setLastBacktestsRefreshAt(refreshedAt)
+      setNowMs(refreshedAt)
       setRows(data)
       setSelected((prev) => {
         if (!data.length) return null
@@ -238,6 +258,20 @@ export default function BacktestsPage() {
   useEffect(() => {
     loadAll()
   }, [])
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNowMs(Date.now()), 60000)
+    return () => window.clearInterval(interval)
+  }, [])
+
+  useEffect(() => {
+    const hasActiveRuns = rows.some((item) => item.status === 'running' || item.status === 'queued')
+    if (!hasActiveRuns) return
+    const interval = window.setInterval(() => {
+      void loadBacktests()
+    }, 15000)
+    return () => window.clearInterval(interval)
+  }, [rows])
 
   useEffect(() => {
     const presetName = parsePresetOptionValue(strategySelection)
@@ -352,15 +386,46 @@ export default function BacktestsPage() {
           {!selected ? <div className="text-sm text-muted mt-2">Select run from table.</div> : null}
           {selected ? (
             <div className="space-y-3 mt-2">
-              <div className="text-sm">
-                <div><span className="text-muted">ID:</span> {selected.id}</div>
-                <div><span className="text-muted">Strategy:</span> {displayStrategy(selected)}</div>
-                <div><span className="text-muted">Status:</span> {selected.status}</div>
-                <div>
-                  <span className="text-muted">Period:</span> {new Date(selected.start_ts).toLocaleDateString()} -{' '}
-                  {new Date(selected.end_ts).toLocaleDateString()}
-                </div>
-              </div>
+              {(() => {
+                const inStatusMinutes = minutesSince(selected.created_at, nowMs)
+                const minutesUntilStale = Math.max(0, BACKTEST_STALE_TIMEOUT_MINUTES - inStatusMinutes)
+                const minutesSinceLastRefresh = lastBacktestsRefreshAt
+                  ? minutesSince(new Date(lastBacktestsRefreshAt).toISOString(), nowMs)
+                  : null
+                const showLiveHint = selected.status === 'running' || selected.status === 'queued'
+                const isStaleRisk = selected.status === 'running' && inStatusMinutes >= BACKTEST_STALE_TIMEOUT_MINUTES
+                return (
+                  <div className="text-sm">
+                    <div><span className="text-muted">ID:</span> {selected.id}</div>
+                    <div><span className="text-muted">Strategy:</span> {displayStrategy(selected)}</div>
+                    <div><span className="text-muted">Status:</span> {selected.status}</div>
+                    <div>
+                      <span className="text-muted">Period:</span> {new Date(selected.start_ts).toLocaleDateString()} -{' '}
+                      {new Date(selected.end_ts).toLocaleDateString()}
+                    </div>
+                    {showLiveHint ? (
+                      <>
+                        <div>
+                          <span className="text-muted">Time in status:</span> {formatDurationMinutes(inStatusMinutes)}
+                        </div>
+                        <div>
+                          <span className="text-muted">Last auto-check:</span>{' '}
+                          {minutesSinceLastRefresh === null
+                            ? 'waiting for first refresh'
+                            : `${formatDurationMinutes(minutesSinceLastRefresh)} ago`}
+                        </div>
+                        <div className={isStaleRisk ? 'text-bad' : 'text-muted'}>
+                          {selected.status === 'queued'
+                            ? 'Queued: waiting for worker execution.'
+                            : isStaleRisk
+                              ? `Likely stuck: running over ${BACKTEST_STALE_TIMEOUT_MINUTES}m.`
+                              : `Running: auto-timeout guard in ~${minutesUntilStale}m.`}
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                )
+              })()}
 
               <div className="text-xs text-muted">Equity curve</div>
               <div className="rounded-lg border border-line bg-panelSoft p-2">
