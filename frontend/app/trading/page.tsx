@@ -32,8 +32,14 @@ export default function TradingPage() {
   const [positions, setPositions] = useState<Position[]>([])
   const [trades, setTrades] = useState<Trade[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [refreshing, setRefreshing] = useState(false)
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null)
 
-  async function load() {
+  async function load(showSpinner = true) {
+    if (showSpinner) {
+      setRefreshing(true)
+    }
+    setError(null)
     try {
       const [p, t] = await Promise.all([
         apiFetch<Position[]>('/api/positions?mode=paper'),
@@ -41,16 +47,24 @@ export default function TradingPage() {
       ])
       setPositions(p)
       setTrades(t)
+      setLastUpdatedAt(new Date())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load trading data')
+    } finally {
+      if (showSpinner) {
+        setRefreshing(false)
+      }
     }
   }
 
   useEffect(() => {
-    load()
+    void load()
   }, [])
 
-  const openPositions = useMemo(() => positions.filter((p) => p.status === 'open'), [positions])
+  const openPositions = useMemo(
+    () => positions.filter((p) => p.status.toLowerCase() === 'open'),
+    [positions]
+  )
 
   return (
     <div className="space-y-4">
@@ -64,9 +78,19 @@ export default function TradingPage() {
       <div className="card p-3">
         <div className="flex items-center justify-between">
           <h2 className="font-semibold">Open positions</h2>
-          <button className="rounded-lg border border-line bg-panel px-3 py-2 text-sm" onClick={load}>
-            Refresh
-          </button>
+          <div className="flex items-center gap-3">
+            <div className="text-xs text-muted">
+              {lastUpdatedAt ? `Updated ${lastUpdatedAt.toLocaleTimeString()}` : 'Not updated yet'}
+            </div>
+            <button
+              type="button"
+              className="rounded-lg border border-line bg-panel px-3 py-2 text-sm cursor-pointer disabled:opacity-60"
+              onClick={() => void load(true)}
+              disabled={refreshing}
+            >
+              {refreshing ? 'Refreshing...' : 'Refresh'}
+            </button>
+          </div>
         </div>
         <div className="mt-3 overflow-auto">
           <table className="w-full text-sm min-w-[760px]">
