@@ -1,4 +1,7 @@
-from app.services.backtest_service import UniverseCandidate, _select_top5_with_history
+from datetime import datetime, timedelta, timezone
+
+from app.models.entities import Backtest
+from app.services.backtest_service import UniverseCandidate, _select_top5_with_history, fail_stale_backtests
 
 
 def test_universe_selection_excludes_near_zero_coverage_and_replaces_below_target():
@@ -50,3 +53,58 @@ def test_universe_selection_keeps_below_target_when_no_better_candidates():
     assert len(selected) == 5
     assert all(item.selected for item in selected)
     assert all(item.selection_reason == "kept_below_target_no_better_candidate" for item in selected)
+
+
+def test_fail_stale_backtests_marks_only_old_running(db_session):
+    now = datetime.now(timezone.utc)
+    base_start = now - timedelta(days=2)
+    base_end = now - timedelta(days=1)
+
+    stale_running = Backtest(
+        strategy="StrategyBreakoutRetest",
+        universe_json=[],
+        start_ts=base_start,
+        end_ts=base_end,
+        params_json={},
+        metrics_json={},
+        equity_curve_json=[],
+        status="running",
+        created_at=now - timedelta(minutes=61),
+    )
+    fresh_running = Backtest(
+        strategy="StrategyBreakoutRetest",
+        universe_json=[],
+        start_ts=base_start,
+        end_ts=base_end,
+        params_json={},
+        metrics_json={},
+        equity_curve_json=[],
+        status="running",
+        created_at=now - timedelta(minutes=15),
+    )
+    queued_old = Backtest(
+        strategy="StrategyBreakoutRetest",
+        universe_json=[],
+        start_ts=base_start,
+        end_ts=base_end,
+        params_json={},
+        metrics_json={},
+        equity_curve_json=[],
+        status="queued",
+        created_at=now - timedelta(minutes=120),
+    )
+
+    db_session.add_all([stale_running, fresh_running, queued_old])
+    db_session.commit()
+
+    result = fail_stale_backtests(db_session, stale_minutes=60)
+
+    db_session.refresh(stale_running)
+    db_session.refresh(fresh_running)
+    db_session.refresh(queued_old)
+
+    assert result["stale_marked_failed"] == 1
+    assert stale_running.status == "failed"
+    assert "stale_timeout" in stale_running.metrics_json["error"]
+    assert fresh_running.status == "running"
+    assert queued_old.status == "queued"

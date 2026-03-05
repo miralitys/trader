@@ -11,7 +11,7 @@ from app.execution.live import run_live_execution_cycle
 from app.execution.paper import run_paper_execution_cycle
 from app.execution.reconciliation import run_reconciliation_cycle
 from app.models.entities import Setting
-from app.services.backtest_service import run_backtest
+from app.services.backtest_service import BACKTEST_STALE_TIMEOUT_MINUTES, fail_stale_backtests, run_backtest
 from app.services.coinbase import CoinbaseCredentials
 from app.services.market_data import backfill_history, ingest_candles, sync_instruments
 from app.services.strategy_runner import run_strategy_cycle
@@ -168,5 +168,15 @@ def backtest_task(backtest_id: int) -> dict:
                 "backtest_id": backtest.id,
                 "metrics": backtest.metrics_json,
             }
+        finally:
+            db.close()
+
+
+@shared_task(name="app.workers.tasks.backtest_reaper_task")
+def backtest_reaper_task() -> dict:
+    with _timed("backtest_reaper"):
+        db = SessionLocal()
+        try:
+            return fail_stale_backtests(db, stale_minutes=BACKTEST_STALE_TIMEOUT_MINUTES)
         finally:
             db.close()

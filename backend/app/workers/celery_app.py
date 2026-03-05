@@ -49,6 +49,10 @@ celery_app.conf.beat_schedule = {
         "task": "app.workers.tasks.backfill_history_task",
         "schedule": 600.0,
     },
+    "backtest-stale-guard-every-5-min": {
+        "task": "app.workers.tasks.backtest_reaper_task",
+        "schedule": 300.0,
+    },
 }
 
 # Ensure all shared_task declarations are registered in this Celery app.

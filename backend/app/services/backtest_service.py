@@ -26,6 +26,7 @@ DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT = 0.20
 DEFAULT_BACKTEST_TAKER_FEE_PCT = 0.60
 DEFAULT_HISTORY_TARGET_COVERAGE_RATIO = 0.20
 DEFAULT_HISTORY_MIN_COVERAGE_RATIO = 0.03
+BACKTEST_STALE_TIMEOUT_MINUTES = 60
 STRATEGY_BREAKOUT_RETEST_2 = "StrategyBreakoutRetest 2"
 BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO = 0.005
 BREAKOUT_RETEST_2_TARGET_COVERAGE_RATIO = 0.005
@@ -88,6 +89,29 @@ def rolling_24_month_window(now: datetime | None = None) -> tuple[datetime, date
         # Handle leap-day rollover (e.g. Feb 29 -> Feb 28).
         start = end.replace(year=end.year - 2, day=28)
     return start, end
+
+
+def fail_stale_backtests(db: Session, *, stale_minutes: int = BACKTEST_STALE_TIMEOUT_MINUTES) -> dict[str, int]:
+    stale_minutes = max(1, int(stale_minutes))
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=stale_minutes)
+
+    stale_rows = db.scalars(
+        select(Backtest).where(Backtest.status == "running", Backtest.created_at <= cutoff)
+    ).all()
+
+    marked = 0
+    for row in stale_rows:
+        metrics = row.metrics_json if isinstance(row.metrics_json, dict) else {}
+        metrics = metrics.copy()
+        metrics["error"] = f"stale_timeout: running for over {stale_minutes} minutes"
+        row.metrics_json = metrics
+        row.status = "failed"
+        marked += 1
+
+    if marked:
+        db.commit()
+
+    return {"stale_marked_failed": marked, "stale_minutes": stale_minutes}
 
 
 def _to_float(value: Any, default: float = 0.0) -> float:
