@@ -72,6 +72,7 @@ STRATEGY_PROFILES: dict[str, dict[str, Any]] = {
         "backtest": {
             "history_min_coverage_ratio": 0.005,
             "history_target_coverage_ratio": 0.005,
+            "history_required_coverage_ratio": 0.20,
             "input_tickers": list(DEFAULT_UNIVERSE_INPUT),
         },
     },
@@ -95,6 +96,7 @@ STRATEGY_PROFILES: dict[str, dict[str, Any]] = {
         "backtest": {
             "history_min_coverage_ratio": 0.005,
             "history_target_coverage_ratio": 0.005,
+            "history_required_coverage_ratio": 0.20,
             "input_tickers": list(DEFAULT_UNIVERSE_INPUT),
         },
     },
@@ -126,6 +128,7 @@ STRATEGY_PROFILES: dict[str, dict[str, Any]] = {
         "backtest": {
             "history_min_coverage_ratio": 0.005,
             "history_target_coverage_ratio": 0.005,
+            "history_required_coverage_ratio": 0.20,
             "input_tickers": list(DEFAULT_UNIVERSE_INPUT),
         },
     },
@@ -162,6 +165,7 @@ STRATEGY_PROFILES: dict[str, dict[str, Any]] = {
         "backtest": {
             "history_min_coverage_ratio": 0.005,
             "history_target_coverage_ratio": 0.005,
+            "history_required_coverage_ratio": 0.20,
             "input_tickers": list(DEFAULT_UNIVERSE_INPUT),
         },
     },

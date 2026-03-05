@@ -7,6 +7,7 @@ def test_profile_backtest_defaults_for_mean_reversion():
 
     assert backtest["history_min_coverage_ratio"] == 0.005
     assert backtest["history_target_coverage_ratio"] == 0.005
+    assert backtest["history_required_coverage_ratio"] == 0.20
     assert isinstance(backtest["input_tickers"], list)
     assert len(backtest["input_tickers"]) > 0
 

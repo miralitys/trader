@@ -7,6 +7,7 @@ export type BaseStrategy =
 export type StrategyBacktestParams = {
   history_min_coverage_ratio?: number
   history_target_coverage_ratio?: number
+  history_required_coverage_ratio?: number
   input_tickers?: string[]
 }
 
@@ -59,6 +60,10 @@ function normalizeBacktestParams(value: unknown): StrategyBacktestParams | undef
     typeof value.history_target_coverage_ratio === 'number'
       ? value.history_target_coverage_ratio
       : value.target_coverage_ratio
+  const requiredCoverage =
+    typeof value.history_required_coverage_ratio === 'number'
+      ? value.history_required_coverage_ratio
+      : value.required_coverage_ratio
   const inputTickers = normalizeTickers(value.input_tickers)
 
   const normalized: StrategyBacktestParams = {}
@@ -67,6 +72,9 @@ function normalizeBacktestParams(value: unknown): StrategyBacktestParams | undef
   }
   if (typeof targetCoverage === 'number' && Number.isFinite(targetCoverage)) {
     normalized.history_target_coverage_ratio = targetCoverage
+  }
+  if (typeof requiredCoverage === 'number' && Number.isFinite(requiredCoverage)) {
+    normalized.history_required_coverage_ratio = requiredCoverage
   }
   if (inputTickers) {
     normalized.input_tickers = inputTickers

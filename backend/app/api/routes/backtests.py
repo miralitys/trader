@@ -11,8 +11,13 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.entities import Backtest, User
-from app.schemas.backtest import BacktestOut, BacktestRunRequest
-from app.services.backtest_service import rolling_24_month_window
+from app.schemas.backtest import (
+    BacktestHistoryReadinessOut,
+    BacktestHistoryReadinessRequest,
+    BacktestOut,
+    BacktestRunRequest,
+)
+from app.services.backtest_service import inspect_backtest_history_readiness, rolling_24_month_window
 from app.workers.celery_app import celery_app
 
 router = APIRouter(prefix="/backtests")
@@ -57,6 +62,28 @@ def run_backtest(
             detail="Failed to enqueue backtest task. Verify Redis and worker availability.",
         ) from exc
     return BacktestOut.model_validate(row)
+
+
+@router.post("/history-readiness", response_model=BacktestHistoryReadinessOut)
+def backtest_history_readiness(
+    payload: BacktestHistoryReadinessRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> BacktestHistoryReadinessOut:
+    default_start, default_end = rolling_24_month_window()
+    start_ts = payload.start_ts or default_start
+    end_ts = payload.end_ts or default_end
+    if start_ts >= end_ts:
+        raise HTTPException(status_code=400, detail="start_ts must be earlier than end_ts")
+
+    readiness = inspect_backtest_history_readiness(
+        db,
+        strategy=payload.strategy,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        params=payload.params,
+    )
+    return BacktestHistoryReadinessOut.model_validate(readiness)
 
 
 @router.get("", response_model=list[BacktestOut])

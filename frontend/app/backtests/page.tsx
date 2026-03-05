@@ -29,6 +29,34 @@ type SettingsForBacktests = {
   strategy_params_json?: Record<string, unknown>
 }
 
+type BacktestHistoryReadiness = {
+  ready: boolean
+  reason: string
+  strategy_requested: string
+  strategy_runtime: string
+  period_requested: { start_ts: string; end_ts: string }
+  period_effective: { start_ts: string; end_ts: string }
+  coverage: {
+    effective_ratio: number
+    required_ratio: number
+    min_ratio: number
+    target_ratio: number
+  }
+  universe: {
+    input_tickers: string[]
+    selected_top5: string[]
+    selection_source: string
+  }
+  data_availability: Array<{
+    symbol: string
+    selected: boolean
+    selection_reason: string
+    coverage_ratio_24m: number
+    first_candle_ts: string | null
+    last_candle_ts: string | null
+  }>
+}
+
 const DEFAULT_STRATEGY_SELECTION = 'builtin:StrategyBreakoutRetest'
 const STRATEGY_BREAKOUT_RETEST_2 = 'StrategyBreakoutRetest 2'
 const BREAKOUT_RETEST_2_SELECTION = 'profile:StrategyBreakoutRetest2'
@@ -106,6 +134,7 @@ function resolveSelection(
           strategy_base_strategy: 'StrategyBreakoutRetest',
           history_min_coverage_ratio: 0.005,
           history_target_coverage_ratio: 0.005,
+          history_required_coverage_ratio: 0.005,
           input_tickers: BREAKOUT_RETEST_2_TICKERS
         }
       }
@@ -124,6 +153,9 @@ function resolveSelection(
       }
       if (preset.backtest_params?.history_target_coverage_ratio !== undefined) {
         params.history_target_coverage_ratio = preset.backtest_params.history_target_coverage_ratio
+      }
+      if ((preset.backtest_params as Record<string, unknown> | undefined)?.history_required_coverage_ratio !== undefined) {
+        params.history_required_coverage_ratio = (preset.backtest_params as Record<string, unknown>).history_required_coverage_ratio
       }
       if (preset.backtest_params?.input_tickers?.length) {
         params.input_tickers = preset.backtest_params.input_tickers
@@ -196,6 +228,8 @@ export default function BacktestsPage() {
   const [strategyPresets, setStrategyPresets] = useState<StrategyPreset[]>([])
   const [startTs, setStartTs] = useState(defaultStart.toISOString())
   const [endTs, setEndTs] = useState(defaultEnd.toISOString())
+  const [readiness, setReadiness] = useState<BacktestHistoryReadiness | null>(null)
+  const [readinessLoading, setReadinessLoading] = useState(false)
 
   function baseMetrics(row: Backtest): Record<string, number> {
     const nested = row.metrics_json?.base as Record<string, number> | undefined
@@ -231,6 +265,27 @@ export default function BacktestsPage() {
     }
   }
 
+  async function loadHistoryReadiness() {
+    setReadinessLoading(true)
+    try {
+      const resolved = resolveSelection(strategySelection, strategyPresets)
+      const data = await apiFetch<BacktestHistoryReadiness>('/api/backtests/history-readiness', {
+        method: 'POST',
+        body: JSON.stringify({
+          strategy: resolved.strategy,
+          start_ts: startTs || undefined,
+          end_ts: endTs || undefined,
+          params: resolved.params
+        })
+      })
+      setReadiness(data)
+    } catch {
+      setReadiness(null)
+    } finally {
+      setReadinessLoading(false)
+    }
+  }
+
   async function loadAll(opts?: { force?: boolean }) {
     setError(null)
     await Promise.all([loadBacktests(opts), loadStrategyPresets(opts)])
@@ -240,6 +295,7 @@ export default function BacktestsPage() {
     setRefreshing(true)
     try {
       await loadAll({ force: true })
+      await loadHistoryReadiness()
     } finally {
       setRefreshing(false)
     }
@@ -292,6 +348,12 @@ export default function BacktestsPage() {
       setStrategySelection(DEFAULT_STRATEGY_SELECTION)
     }
   }, [strategySelection, strategyPresets])
+
+  useEffect(() => {
+    void loadHistoryReadiness()
+  }, [strategySelection, strategyPresets, startTs, endTs])
+
+  const runBlockedByHistory = readiness !== null && !readiness.ready
 
   return (
     <div className="space-y-4">
@@ -347,9 +409,9 @@ export default function BacktestsPage() {
           <button
             className="rounded-lg bg-accent text-white px-3 py-2 text-sm disabled:opacity-50"
             onClick={runBacktest}
-            disabled={running || refreshing}
+            disabled={running || refreshing || readinessLoading || runBlockedByHistory}
           >
-            {running ? 'Running...' : 'Run'}
+            {running ? 'Running...' : runBlockedByHistory ? 'Run blocked (history)' : 'Run'}
           </button>
           <button
             className="rounded-lg border border-line bg-panel px-3 py-2 text-sm disabled:opacity-50"
@@ -360,6 +422,26 @@ export default function BacktestsPage() {
           </button>
         </div>
       </div>
+      {readinessLoading ? (
+        <div className="text-xs text-muted">Checking history readiness...</div>
+      ) : null}
+      {readiness ? (
+        <div className={`card p-3 text-sm ${readiness.ready ? 'text-good' : 'text-bad'}`}>
+          <div className="font-medium">
+            History readiness: {readiness.ready ? 'ready' : 'not ready'} ({(readiness.coverage.effective_ratio * 100).toFixed(1)}%
+            / {(readiness.coverage.required_ratio * 100).toFixed(1)}%)
+          </div>
+          <div className="text-xs text-muted mt-1">
+            Effective: {new Date(readiness.period_effective.start_ts).toLocaleString()} -{' '}
+            {new Date(readiness.period_effective.end_ts).toLocaleString()}
+          </div>
+          {!readiness.ready ? (
+            <div className="text-xs mt-1">
+              reason={readiness.reason}; selected: {readiness.universe.selected_top5.join(', ') || 'none'}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {lastBacktestsRefreshAt ? (
         <div className="text-xs text-muted">
           Updated: {new Date(lastBacktestsRefreshAt).toLocaleTimeString()}

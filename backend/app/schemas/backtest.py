@@ -18,6 +18,31 @@ class BacktestRunRequest(BaseModel):
         return self
 
 
+class BacktestHistoryReadinessRequest(BaseModel):
+    strategy: str = Field(default="StrategyBreakoutRetest")
+    start_ts: datetime | None = None
+    end_ts: datetime | None = None
+    params: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_period(self) -> "BacktestHistoryReadinessRequest":
+        if self.start_ts and self.end_ts and self.start_ts >= self.end_ts:
+            raise ValueError("start_ts must be earlier than end_ts")
+        return self
+
+
+class BacktestHistoryReadinessOut(BaseModel):
+    ready: bool
+    reason: str
+    strategy_requested: str
+    strategy_runtime: str
+    period_requested: dict
+    period_effective: dict
+    coverage: dict
+    universe: dict
+    data_availability: list[dict]
+
+
 class BacktestOut(BaseModel):
     id: int
     strategy: str

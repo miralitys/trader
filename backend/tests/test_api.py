@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from app.models.entities import Candle, Instrument
+from app.services import backtest_service
 
 
 def test_auth_flow_and_me(client):
@@ -50,6 +51,7 @@ def test_settings_include_breakout_retest_2_preset(client, auth_header):
     assert target["base_strategy"] == "StrategyBreakoutRetest"
     assert target["backtest_params"]["history_min_coverage_ratio"] == 0.005
     assert target["backtest_params"]["history_target_coverage_ratio"] == 0.005
+    assert target["backtest_params"]["history_required_coverage_ratio"] == 0.005
     for ticker in ["BTC", "ETH", "SOL", "XRP", "ADA"]:
         assert ticker in target["backtest_params"]["input_tickers"]
 
@@ -66,6 +68,7 @@ def test_settings_include_trend_retrace_70_preset(client, auth_header):
     assert target["base_strategy"] == "StrategyTrendRetrace70"
     assert target["backtest_params"]["history_min_coverage_ratio"] == 0.005
     assert target["backtest_params"]["history_target_coverage_ratio"] == 0.005
+    assert target["backtest_params"]["history_required_coverage_ratio"] == 0.2
     for ticker in ["BTC", "ETH", "SOL", "XRP", "ADA"]:
         assert ticker in target["backtest_params"]["input_tickers"]
 
@@ -109,3 +112,72 @@ def test_candles_endpoint(client, auth_header, db_session):
     )
     assert resp.status_code == 200
     assert len(resp.json()) == 10
+
+
+def test_backtest_history_readiness_endpoint_returns_not_ready_for_sparse_data(
+    client, auth_header, db_session, monkeypatch
+):
+    now = datetime.now(timezone.utc)
+    start_ts = now - timedelta(days=730)
+    end_ts = now
+
+    instrument = Instrument(
+        symbol="ONDO-USDC",
+        base="ONDO",
+        quote="USDC",
+        product_id="ONDO-USDC",
+        status="online",
+        min_size=0.0001,
+        size_increment=0.0001,
+        price_increment=0.0001,
+    )
+    db_session.add(instrument)
+    db_session.commit()
+    db_session.refresh(instrument)
+    monkeypatch.setattr(
+        backtest_service.coinbase_client,
+        "get_products",
+        lambda: [
+            {
+                "product_id": "ONDO-USDC",
+                "base_currency_id": "ONDO",
+                "quote_currency_id": "USDC",
+                "status": "online",
+                "trading_disabled": False,
+                "quote_volume_24h": "1000000",
+            }
+        ],
+    )
+
+    for i in range(288):
+        ts = end_ts - timedelta(minutes=5 * (287 - i))
+        db_session.add(
+            Candle(
+                instrument_id=instrument.id,
+                timeframe="5m",
+                ts=ts,
+                open=1.0,
+                high=1.1,
+                low=0.9,
+                close=1.0,
+                volume=1000.0,
+                source="test",
+            )
+        )
+    db_session.commit()
+
+    resp = client.post(
+        "/api/backtests/history-readiness",
+        headers=auth_header,
+        json={
+            "strategy": "StrategyTrendRetrace70",
+            "start_ts": start_ts.isoformat(),
+            "end_ts": end_ts.isoformat(),
+            "params": {"input_tickers": ["ONDO"]},
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["ready"] is False
+    assert payload["reason"] in {"insufficient_common_history", "no_symbols_with_min_coverage"}
+    assert payload["coverage"]["required_ratio"] >= 0.2

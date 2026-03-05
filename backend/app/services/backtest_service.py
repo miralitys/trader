@@ -26,6 +26,7 @@ DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT = 0.20
 DEFAULT_BACKTEST_TAKER_FEE_PCT = 0.60
 DEFAULT_HISTORY_TARGET_COVERAGE_RATIO = 0.20
 DEFAULT_HISTORY_MIN_COVERAGE_RATIO = 0.03
+DEFAULT_HISTORY_REQUIRED_COVERAGE_RATIO = 0.20
 BACKTEST_STALE_TIMEOUT_MINUTES = 60
 STRATEGY_BREAKOUT_RETEST_2 = "StrategyBreakoutRetest 2"
 BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO = 0.005
@@ -142,19 +143,59 @@ def _normalize_input_tickers(value: Any) -> list[str]:
     return normalized
 
 
-def _resolve_runtime_strategy(backtest: Backtest) -> str:
-    params = backtest.params_json or {}
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _resolve_runtime_strategy_from_values(requested_strategy: str, params: dict[str, Any]) -> str:
     requested_base = params.get("strategy_base_strategy")
     if isinstance(requested_base, str) and requested_base in SUPPORTED_BACKTEST_STRATEGIES:
         return requested_base
 
-    if backtest.strategy == STRATEGY_BREAKOUT_RETEST_2:
+    if requested_strategy == STRATEGY_BREAKOUT_RETEST_2:
         return "StrategyBreakoutRetest"
 
-    if backtest.strategy in SUPPORTED_BACKTEST_STRATEGIES:
-        return backtest.strategy
+    if requested_strategy in SUPPORTED_BACKTEST_STRATEGIES:
+        return requested_strategy
 
     return "StrategyBreakoutRetest"
+
+
+def _resolve_runtime_strategy(backtest: Backtest) -> str:
+    return _resolve_runtime_strategy_from_values(backtest.strategy, backtest.params_json or {})
+
+
+def _effective_coverage_ratio(
+    requested_start: datetime,
+    requested_end: datetime,
+    effective_start: datetime,
+) -> float:
+    total_seconds = max(1.0, (requested_end - requested_start).total_seconds())
+    covered_start = max(requested_start, effective_start)
+    covered_seconds = max(0.0, (requested_end - covered_start).total_seconds())
+    return covered_seconds / total_seconds
+
+
+def _build_data_availability_report(candidates: list[UniverseCandidate]) -> list[dict[str, Any]]:
+    report: list[dict[str, Any]] = []
+    for candidate in candidates:
+        report.append(
+            {
+                "symbol": candidate.symbol,
+                "product_id": candidate.product_id,
+                "selected": candidate.selected,
+                "selection_reason": candidate.selection_reason,
+                "liquidity_score": candidate.liquidity_score,
+                "coverage_ratio_24m": round(candidate.coverage_ratio, 4),
+                "first_candle_ts": candidate.first_ts.isoformat() if candidate.first_ts else None,
+                "last_candle_ts": candidate.last_ts.isoformat() if candidate.last_ts else None,
+            }
+        )
+    return report
 
 
 def _load_candles(
@@ -193,6 +234,8 @@ def _history_coverage(
     start_ts: datetime,
     end_ts: datetime,
 ) -> tuple[datetime | None, datetime | None, float]:
+    start_ts = _as_utc(start_ts) or start_ts
+    end_ts = _as_utc(end_ts) or end_ts
     min_ts, max_ts = db.execute(
         select(func.min(Candle.ts), func.max(Candle.ts)).where(
             Candle.instrument_id == instrument_id,
@@ -200,6 +243,8 @@ def _history_coverage(
             Candle.ts <= end_ts,
         )
     ).one()
+    min_ts = _as_utc(min_ts)
+    max_ts = _as_utc(max_ts)
 
     if min_ts is None or max_ts is None:
         return None, None, 0.0
@@ -390,6 +435,180 @@ def _compute_effective_common_start(
     if common_start >= requested_end:
         return requested_start
     return common_start
+
+
+def _build_backtest_plan(
+    db: Session,
+    *,
+    requested_strategy: str,
+    requested_start: datetime,
+    requested_end: datetime,
+    raw_params: dict[str, Any] | None,
+    setting: Setting | None,
+) -> dict[str, Any]:
+    params = raw_params.copy() if isinstance(raw_params, dict) else {}
+    runtime_strategy = _resolve_runtime_strategy_from_values(requested_strategy, params)
+    strategy_profile = get_strategy_profile(runtime_strategy)
+    profile_signal_params = strategy_profile.get("signal", {})
+    profile_risk_params = strategy_profile.get("risk", {})
+    profile_fee_params = strategy_profile.get("fees", {})
+    profile_backtest_params = strategy_profile.get("backtest", {})
+
+    if requested_strategy == STRATEGY_BREAKOUT_RETEST_2:
+        params["history_min_coverage_ratio"] = BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO
+        params["history_target_coverage_ratio"] = BREAKOUT_RETEST_2_TARGET_COVERAGE_RATIO
+        params["history_required_coverage_ratio"] = BREAKOUT_RETEST_2_TARGET_COVERAGE_RATIO
+        current_tickers = _normalize_input_tickers(params.get("input_tickers"))
+        merged_tickers = _normalize_input_tickers(
+            BREAKOUT_RETEST_2_EXTRA_TICKERS + current_tickers + list(DEFAULT_UNIVERSE_INPUT)
+        )
+        params["input_tickers"] = merged_tickers
+        params.setdefault("strategy_base_strategy", "StrategyBreakoutRetest")
+
+    target_coverage_ratio = _to_float(
+        params.get("history_target_coverage_ratio", params.get("target_coverage_ratio")),
+        _to_float(
+            profile_backtest_params.get("history_target_coverage_ratio"),
+            DEFAULT_HISTORY_TARGET_COVERAGE_RATIO,
+        ),
+    )
+    min_coverage_ratio = _to_float(
+        params.get("history_min_coverage_ratio", params.get("min_coverage_ratio")),
+        _to_float(
+            profile_backtest_params.get("history_min_coverage_ratio"),
+            DEFAULT_HISTORY_MIN_COVERAGE_RATIO,
+        ),
+    )
+    required_coverage_ratio = _to_float(
+        params.get("history_required_coverage_ratio"),
+        _to_float(
+            profile_backtest_params.get("history_required_coverage_ratio"),
+            DEFAULT_HISTORY_REQUIRED_COVERAGE_RATIO,
+        ),
+    )
+
+    target_coverage_ratio = min(max(target_coverage_ratio, 0.0), 1.0)
+    min_coverage_ratio = min(max(min_coverage_ratio, 0.0), 1.0)
+    required_coverage_ratio = min(max(required_coverage_ratio, 0.0), 1.0)
+    if min_coverage_ratio > target_coverage_ratio:
+        target_coverage_ratio = min_coverage_ratio
+    if required_coverage_ratio < min_coverage_ratio:
+        required_coverage_ratio = min_coverage_ratio
+
+    input_tickers = _normalize_input_tickers(params.get("input_tickers"))
+    if not input_tickers:
+        input_tickers = _normalize_input_tickers(profile_backtest_params.get("input_tickers"))
+    if not input_tickers:
+        input_tickers = _normalize_input_tickers(setting.universe_json.get("input_tickers") if setting else None)
+    if not input_tickers:
+        input_tickers = _normalize_input_tickers(DEFAULT_UNIVERSE_INPUT)
+
+    candidates, universe_source = _build_universe_candidates(
+        db,
+        input_tickers=input_tickers,
+        start_ts=requested_start,
+        end_ts=requested_end,
+    )
+    selected = _select_top5_with_history(
+        candidates=candidates,
+        target_coverage_ratio=target_coverage_ratio,
+        min_coverage_ratio=min_coverage_ratio,
+    )
+    selected_symbols = [item.symbol for item in selected]
+    effective_start = _compute_effective_common_start(selected, requested_start, requested_end)
+    effective_coverage_ratio = _effective_coverage_ratio(
+        requested_start=requested_start,
+        requested_end=requested_end,
+        effective_start=effective_start,
+    )
+    data_availability_report = _build_data_availability_report(candidates)
+
+    if not selected_symbols:
+        readiness_reason = "no_symbols_with_min_coverage"
+    elif effective_coverage_ratio < required_coverage_ratio:
+        readiness_reason = "insufficient_common_history"
+    else:
+        readiness_reason = "ok"
+
+    ready = readiness_reason == "ok"
+
+    params["period_requested_start_ts"] = requested_start.isoformat()
+    params["period_requested_end_ts"] = requested_end.isoformat()
+    params["period_effective_start_ts"] = effective_start.isoformat()
+    params["period_effective_end_ts"] = requested_end.isoformat()
+    params["history_target_coverage_ratio"] = target_coverage_ratio
+    params["history_min_coverage_ratio"] = min_coverage_ratio
+    params["history_required_coverage_ratio"] = required_coverage_ratio
+    params["history_effective_coverage_ratio"] = round(effective_coverage_ratio, 6)
+    params["input_tickers"] = input_tickers
+    params["strategy_requested"] = requested_strategy
+    params["strategy_runtime"] = runtime_strategy
+
+    return {
+        "params": params,
+        "requested_strategy": requested_strategy,
+        "runtime_strategy": runtime_strategy,
+        "strategy_profile": strategy_profile,
+        "profile_signal_params": profile_signal_params,
+        "profile_risk_params": profile_risk_params,
+        "profile_fee_params": profile_fee_params,
+        "profile_backtest_params": profile_backtest_params,
+        "target_coverage_ratio": target_coverage_ratio,
+        "min_coverage_ratio": min_coverage_ratio,
+        "required_coverage_ratio": required_coverage_ratio,
+        "effective_coverage_ratio": effective_coverage_ratio,
+        "input_tickers": input_tickers,
+        "candidates": candidates,
+        "universe_source": universe_source,
+        "selected": selected,
+        "selected_symbols": selected_symbols,
+        "effective_start": effective_start,
+        "data_availability_report": data_availability_report,
+        "ready": ready,
+        "readiness_reason": readiness_reason,
+    }
+
+
+def inspect_backtest_history_readiness(
+    db: Session,
+    *,
+    strategy: str,
+    start_ts: datetime,
+    end_ts: datetime,
+    params: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    setting = db.scalar(select(Setting).order_by(Setting.id.asc()).limit(1))
+    plan = _build_backtest_plan(
+        db,
+        requested_strategy=strategy,
+        requested_start=start_ts,
+        requested_end=end_ts,
+        raw_params=params or {},
+        setting=setting,
+    )
+    return {
+        "ready": plan["ready"],
+        "reason": plan["readiness_reason"],
+        "strategy_requested": plan["requested_strategy"],
+        "strategy_runtime": plan["runtime_strategy"],
+        "period_requested": {"start_ts": start_ts.isoformat(), "end_ts": end_ts.isoformat()},
+        "period_effective": {
+            "start_ts": plan["effective_start"].isoformat(),
+            "end_ts": end_ts.isoformat(),
+        },
+        "coverage": {
+            "effective_ratio": round(plan["effective_coverage_ratio"], 6),
+            "required_ratio": plan["required_coverage_ratio"],
+            "min_ratio": plan["min_coverage_ratio"],
+            "target_ratio": plan["target_coverage_ratio"],
+        },
+        "universe": {
+            "input_tickers": plan["input_tickers"],
+            "selected_top5": plan["selected_symbols"],
+            "selection_source": plan["universe_source"],
+        },
+        "data_availability": plan["data_availability_report"],
+    }
 
 
 def _regime_filter_1h(
@@ -864,82 +1083,67 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         setting = db.scalar(select(Setting).order_by(Setting.id.asc()).limit(1))
         requested_start = backtest.start_ts
         requested_end = backtest.end_ts
-        params = backtest.params_json.copy()
         requested_strategy = backtest.strategy
-        runtime_strategy = _resolve_runtime_strategy(backtest)
-        strategy_profile = get_strategy_profile(runtime_strategy)
-        profile_signal_params = strategy_profile.get("signal", {})
-        profile_risk_params = strategy_profile.get("risk", {})
-        profile_fee_params = strategy_profile.get("fees", {})
-        profile_backtest_params = strategy_profile.get("backtest", {})
-
-        if requested_strategy == STRATEGY_BREAKOUT_RETEST_2:
-            params["history_min_coverage_ratio"] = BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO
-            params["history_target_coverage_ratio"] = BREAKOUT_RETEST_2_TARGET_COVERAGE_RATIO
-            current_tickers = _normalize_input_tickers(params.get("input_tickers"))
-            merged_tickers = _normalize_input_tickers(
-                BREAKOUT_RETEST_2_EXTRA_TICKERS + current_tickers + list(DEFAULT_UNIVERSE_INPUT)
-            )
-            params["input_tickers"] = merged_tickers
-            params.setdefault("strategy_base_strategy", "StrategyBreakoutRetest")
-
-        target_coverage_ratio = _to_float(
-            params.get("history_target_coverage_ratio", params.get("target_coverage_ratio")),
-            _to_float(
-                profile_backtest_params.get("history_target_coverage_ratio"),
-                DEFAULT_HISTORY_TARGET_COVERAGE_RATIO,
-            ),
-        )
-        min_coverage_ratio = _to_float(
-            params.get("history_min_coverage_ratio", params.get("min_coverage_ratio")),
-            _to_float(
-                profile_backtest_params.get("history_min_coverage_ratio"),
-                DEFAULT_HISTORY_MIN_COVERAGE_RATIO,
-            ),
-        )
-        target_coverage_ratio = min(max(target_coverage_ratio, 0.0), 1.0)
-        min_coverage_ratio = min(max(min_coverage_ratio, 0.0), 1.0)
-        if min_coverage_ratio > target_coverage_ratio:
-            target_coverage_ratio = min_coverage_ratio
-
-        input_tickers = _normalize_input_tickers(params.get("input_tickers"))
-        if not input_tickers:
-            input_tickers = _normalize_input_tickers(profile_backtest_params.get("input_tickers"))
-        if not input_tickers:
-            input_tickers = _normalize_input_tickers(
-                setting.universe_json.get("input_tickers") if setting else None
-            )
-        if not input_tickers:
-            input_tickers = _normalize_input_tickers(DEFAULT_UNIVERSE_INPUT)
-
-        candidates, universe_source = _build_universe_candidates(
+        plan = _build_backtest_plan(
             db,
-            input_tickers=input_tickers,
-            start_ts=requested_start,
-            end_ts=requested_end,
+            requested_strategy=requested_strategy,
+            requested_start=requested_start,
+            requested_end=requested_end,
+            raw_params=backtest.params_json,
+            setting=setting,
         )
-        selected = _select_top5_with_history(
-            candidates=candidates,
-            target_coverage_ratio=target_coverage_ratio,
-            min_coverage_ratio=min_coverage_ratio,
-        )
-        selected_symbols = [item.symbol for item in selected]
-        effective_start = _compute_effective_common_start(selected, requested_start, requested_end)
+        params = plan["params"]
+        runtime_strategy = plan["runtime_strategy"]
+        strategy_profile = plan["strategy_profile"]
+        profile_signal_params = plan["profile_signal_params"]
+        profile_risk_params = plan["profile_risk_params"]
+        profile_fee_params = plan["profile_fee_params"]
+        target_coverage_ratio = plan["target_coverage_ratio"]
+        min_coverage_ratio = plan["min_coverage_ratio"]
+        required_coverage_ratio = plan["required_coverage_ratio"]
+        effective_coverage_ratio = plan["effective_coverage_ratio"]
+        input_tickers = plan["input_tickers"]
+        universe_source = plan["universe_source"]
+        selected_symbols = plan["selected_symbols"]
+        effective_start = plan["effective_start"]
+        data_availability_report = plan["data_availability_report"]
 
         backtest.universe_json = selected_symbols
         backtest.start_ts = effective_start
-
-        params["period_requested_start_ts"] = requested_start.isoformat()
-        params["period_requested_end_ts"] = requested_end.isoformat()
-        params["period_effective_start_ts"] = effective_start.isoformat()
-        params["period_effective_end_ts"] = requested_end.isoformat()
-        params["history_target_coverage_ratio"] = target_coverage_ratio
-        params["history_min_coverage_ratio"] = min_coverage_ratio
-        params["input_tickers"] = input_tickers
-        params["strategy_requested"] = requested_strategy
-        params["strategy_runtime"] = runtime_strategy
         backtest.params_json = params
         db.commit()
+
+        if not plan["ready"]:
+            backtest.status = "failed"
+            backtest.metrics_json = {
+                "error": (
+                    "insufficient_history_coverage: "
+                    f"effective={effective_coverage_ratio:.4f} "
+                    f"required={required_coverage_ratio:.4f} "
+                    f"reason={plan['readiness_reason']}"
+                ),
+                "base": {
+                    "trades": 0,
+                    "winrate": 0.0,
+                    "profit_factor": 0.0,
+                    "expectancy": 0.0,
+                    "expectancy_r": 0.0,
+                    "max_drawdown_pct": 0.0,
+                    "avg_duration_min": 0.0,
+                },
+                "readiness": {
+                    "ready": False,
+                    "reason": plan["readiness_reason"],
+                    "effective_coverage_ratio": round(effective_coverage_ratio, 6),
+                    "required_coverage_ratio": required_coverage_ratio,
+                    "selected_top5": selected_symbols,
+                },
+                "data_availability": data_availability_report,
+            }
+            backtest.equity_curve_json = []
+            db.commit()
+            db.refresh(backtest)
+            return backtest
 
         max_hold_hours = int(
             backtest.params_json.get(
@@ -952,21 +1156,6 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             if key in params:
                 strategy_params[key] = params[key]
         optimization_meta: dict[str, Any] | None = None
-        data_availability_report: list[dict] = []
-
-        for candidate in candidates:
-            data_availability_report.append(
-                {
-                    "symbol": candidate.symbol,
-                    "product_id": candidate.product_id,
-                    "selected": candidate.selected,
-                    "selection_reason": candidate.selection_reason,
-                    "liquidity_score": candidate.liquidity_score,
-                    "coverage_ratio_24m": round(candidate.coverage_ratio, 4),
-                    "first_candle_ts": candidate.first_ts.isoformat() if candidate.first_ts else None,
-                    "last_candle_ts": candidate.last_ts.isoformat() if candidate.last_ts else None,
-                }
-            )
 
         candles_5m_by_symbol: dict[str, list[CandleData]] = {}
         candles_1h_by_symbol: dict[str, list[CandleData]] = {}
@@ -1119,6 +1308,8 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                 ],
                 "min_coverage_ratio": min_coverage_ratio,
                 "target_coverage_ratio": target_coverage_ratio,
+                "required_coverage_ratio": required_coverage_ratio,
+                "effective_coverage_ratio": round(effective_coverage_ratio, 6),
             },
             "fees": {
                 "taker_fee_pct": taker_fee_pct,

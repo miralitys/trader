@@ -25,6 +25,10 @@ def _normalize_preset_backtest_params(value: dict | None) -> dict:
     if isinstance(target_ratio, (int, float)):
         normalized["history_target_coverage_ratio"] = float(target_ratio)
 
+    required_ratio = value.get("history_required_coverage_ratio", value.get("required_coverage_ratio"))
+    if isinstance(required_ratio, (int, float)):
+        normalized["history_required_coverage_ratio"] = float(required_ratio)
+
     input_tickers_raw = value.get("input_tickers")
     if isinstance(input_tickers_raw, list):
         tickers: list[str] = []

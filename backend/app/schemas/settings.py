@@ -87,6 +87,7 @@ DEFAULT_STRATEGY = {
             "backtest_params": {
                 "history_min_coverage_ratio": 0.005,
                 "history_target_coverage_ratio": 0.005,
+                "history_required_coverage_ratio": 0.005,
                 "input_tickers": _DEFAULT_BREAKOUT_RETEST_2_TICKERS,
             },
         },
@@ -96,6 +97,7 @@ DEFAULT_STRATEGY = {
             "backtest_params": {
                 "history_min_coverage_ratio": 0.005,
                 "history_target_coverage_ratio": 0.005,
+                "history_required_coverage_ratio": 0.2,
                 "input_tickers": _DEFAULT_BREAKOUT_RETEST_2_TICKERS,
             },
         },
