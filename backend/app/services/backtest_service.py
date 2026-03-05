@@ -614,21 +614,13 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         runtime_strategy = _resolve_runtime_strategy(backtest)
 
         if requested_strategy == STRATEGY_BREAKOUT_RETEST_2:
-            if (
-                "history_min_coverage_ratio" not in params
-                and "min_coverage_ratio" not in params
-            ):
-                params["history_min_coverage_ratio"] = BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO
-            if (
-                "history_target_coverage_ratio" not in params
-                and "target_coverage_ratio" not in params
-            ):
-                params["history_target_coverage_ratio"] = BREAKOUT_RETEST_2_TARGET_COVERAGE_RATIO
-            if "input_tickers" not in params:
-                merged_tickers = _normalize_input_tickers(
-                    BREAKOUT_RETEST_2_EXTRA_TICKERS + list(DEFAULT_UNIVERSE_INPUT)
-                )
-                params["input_tickers"] = merged_tickers
+            params["history_min_coverage_ratio"] = BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO
+            params["history_target_coverage_ratio"] = BREAKOUT_RETEST_2_TARGET_COVERAGE_RATIO
+            current_tickers = _normalize_input_tickers(params.get("input_tickers"))
+            merged_tickers = _normalize_input_tickers(
+                BREAKOUT_RETEST_2_EXTRA_TICKERS + current_tickers + list(DEFAULT_UNIVERSE_INPUT)
+            )
+            params["input_tickers"] = merged_tickers
             params.setdefault("strategy_base_strategy", "StrategyBreakoutRetest")
 
         target_coverage_ratio = _to_float(
