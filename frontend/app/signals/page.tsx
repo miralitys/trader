@@ -21,6 +21,68 @@ type Signal = {
   meta_json: Record<string, unknown>
 }
 
+function toNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null
+}
+
+function explainEntryDecision(signal: Signal): string {
+  if (signal.status === 'executed') {
+    return 'Entered: entry limit was filled.'
+  }
+
+  if (signal.status === 'active') {
+    return 'Waiting: signal is active, entry is not filled yet.'
+  }
+
+  if (signal.status === 'expired') {
+    return 'Skipped: entry TTL expired before fill.'
+  }
+
+  if (signal.status !== 'cancelled') {
+    return `Status: ${signal.status}.`
+  }
+
+  const cancelReason = typeof signal.meta_json?.cancel_reason === 'string' ? signal.meta_json.cancel_reason : ''
+
+  if (!cancelReason) {
+    return 'Skipped: cancelled by execution engine.'
+  }
+
+  if (cancelReason.startsWith('edge_too_low')) {
+    const edgeCheck = signal.meta_json?.edge_check as Record<string, unknown> | undefined
+    const ratio = toNumber(edgeCheck?.reward_to_cost_ratio)
+    const required = toNumber(edgeCheck?.required_ratio)
+    if (ratio !== null && required !== null) {
+      return `Skipped: edge ${ratio.toFixed(2)}x below required ${required.toFixed(2)}x.`
+    }
+    return 'Skipped: expected edge too low after fees/slippage.'
+  }
+
+  if (cancelReason === 'max_positions limit reached') {
+    return 'Skipped: max open positions limit reached.'
+  }
+  if (cancelReason === 'max_trades_per_day limit reached') {
+    return 'Skipped: max trades per day limit reached.'
+  }
+  if (cancelReason === 'daily_loss_limit reached') {
+    return 'Skipped: daily loss limit reached.'
+  }
+  if (cancelReason === 'weekly_loss_limit reached') {
+    return 'Skipped: weekly loss limit reached.'
+  }
+  if (cancelReason === 'consecutive_losses pause active') {
+    return 'Skipped: pause after consecutive stop-loss trades.'
+  }
+  if (cancelReason === 'portfolio drawdown limit reached') {
+    return 'Skipped: drawdown limit reached.'
+  }
+  if (cancelReason === 'position below minimum size') {
+    return 'Skipped: order size below exchange minimum.'
+  }
+
+  return `Skipped: ${cancelReason}.`
+}
+
 export default function SignalsPage() {
   const [signals, setSignals] = useState<Signal[]>([])
   const [selected, setSelected] = useState<Signal | null>(null)
@@ -144,6 +206,7 @@ export default function SignalsPage() {
               <div><span className="text-muted">Timeframe:</span> {selected.timeframe}</div>
               <div><span className="text-muted">Entry / SL / TP:</span> {selected.entry.toFixed(4)} / {selected.stop.toFixed(4)} / {selected.take.toFixed(4)}</div>
               <div><span className="text-muted">Reason:</span> {selected.reason}</div>
+              <div><span className="text-muted">Entry decision:</span> {explainEntryDecision(selected)}</div>
               <div className="rounded-lg border border-line bg-panelSoft p-2">
                 <div className="text-xs text-muted mb-1">Meta</div>
                 <pre className="text-xs whitespace-pre-wrap font-mono">{JSON.stringify(selected.meta_json, null, 2)}</pre>
