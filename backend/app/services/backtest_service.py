@@ -574,12 +574,14 @@ def _optimize_breakout_retest_2(
     stop_slippage_pct: float,
     initial_equity: float,
 ) -> tuple[list[RawTrade], dict]:
-    lookback_values = [20, 30, 40]
-    retest_values = [0.2, 0.4, 0.7]
-    stop_mult_values = [0.8, 1.0, 1.3]
-    tp_rr_values = [0.7, 1.0, 1.3]
+    lookback_values = [30, 40]
+    retest_values = [0.1, 0.2, 0.3]
+    stop_mult_values = [1.0, 1.3]
+    tp_rr_values = [0.8, 1.0, 1.3]
     min_volume_values = [0.0, 1.0, 1.25]
-    min_conf_values = [0.0, 0.55, 0.65, 0.75]
+    min_conf_values = [0.0, 0.55, 0.7, 0.85]
+    symbol_top_n_values = [1, 3, 5]
+    max_hold_values = sorted({max(1, int(max_hold_hours)), 6})
 
     candidate_count = 0
     best_raw: list[RawTrade] = []
@@ -593,6 +595,8 @@ def _optimize_breakout_retest_2(
         breakout_tp_rr,
         breakout_min_volume_ratio,
         breakout_min_confidence,
+        symbol_top_n,
+        opt_max_hold_hours,
     ) in product(
         lookback_values,
         retest_values,
@@ -600,8 +604,11 @@ def _optimize_breakout_retest_2(
         tp_rr_values,
         min_volume_values,
         min_conf_values,
+        symbol_top_n_values,
+        max_hold_values,
     ):
         candidate_count += 1
+        candidate_symbols = selected_symbols[: max(1, min(symbol_top_n, len(selected_symbols)))]
         candidate_params = strategy_params.copy()
         candidate_params.update(
             {
@@ -615,10 +622,10 @@ def _optimize_breakout_retest_2(
         )
 
         raw_trades = _simulate_raw_trades_for_symbols(
-            selected_symbols=selected_symbols,
+            selected_symbols=candidate_symbols,
             candles_5m_by_symbol=candles_5m_by_symbol,
             strategy="StrategyBreakoutRetest",
-            max_hold_hours=max_hold_hours,
+            max_hold_hours=opt_max_hold_hours,
             strategy_params=candidate_params,
         )
         if not raw_trades:
@@ -650,12 +657,15 @@ def _optimize_breakout_retest_2(
         elif meets_target:
             rank = (2.0, profit_factor, winrate, float(trades_count), 0.0)
         else:
+            closeness_score = min(profit_factor / BREAKOUT_RETEST_2_TARGET_PF, 1.0) + min(
+                winrate / BREAKOUT_RETEST_2_TARGET_WINRATE, 1.0
+            )
             rank = (
                 1.0,
-                profit_factor * winrate,
-                winrate,
+                closeness_score,
                 profit_factor,
-                float(trades_count),
+                winrate,
+                float(trades_count) / 1000.0,
             )
 
         if best_rank is None or rank > best_rank:
@@ -669,6 +679,8 @@ def _optimize_breakout_retest_2(
                     "breakout_tp_rr": breakout_tp_rr,
                     "breakout_min_volume_ratio": breakout_min_volume_ratio,
                     "breakout_min_confidence": breakout_min_confidence,
+                    "breakout_symbol_top_n": len(candidate_symbols),
+                    "breakout_max_hold_hours": opt_max_hold_hours,
                 },
                 "base_metrics": metrics,
                 "meets_target": meets_target,
@@ -995,6 +1007,8 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                     "breakout_tp_rr",
                     "breakout_min_volume_ratio",
                     "breakout_min_confidence",
+                    "breakout_symbol_top_n",
+                    "breakout_max_hold_hours",
                 )
                 if key in strategy_params
             }
