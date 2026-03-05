@@ -14,10 +14,12 @@ from app.services.coinbase import coinbase_client
 from app.strategies.breakout_retest import generate_breakout_retest_signal
 from app.strategies.indicators import atr, ema
 from app.strategies.mean_reversion_hard_stop import generate_mean_reversion_hard_stop_signal
+from app.strategies.profiles import DEFAULT_INITIAL_EQUITY, get_strategy_profile
 from app.strategies.pullback_trend import generate_pullback_signal
+from app.strategies.trend_retrace_70 import generate_trend_retrace_70_signal
 from app.strategies.types import CandleData
 
-DEFAULT_BACKTEST_INITIAL_EQUITY = 10000.0
+DEFAULT_BACKTEST_INITIAL_EQUITY = DEFAULT_INITIAL_EQUITY
 DEFAULT_BACKTEST_ENTRY_SLIPPAGE_PCT = 0.10
 DEFAULT_BACKTEST_EXIT_SLIPPAGE_PCT = 0.10
 DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT = 0.20
@@ -35,6 +37,7 @@ SUPPORTED_BACKTEST_STRATEGIES = {
     "StrategyBreakoutRetest",
     "StrategyPullbackToTrend",
     "MeanReversionHardStop",
+    "StrategyTrendRetrace70",
 }
 
 
@@ -438,6 +441,24 @@ def _simulate_raw_trades_for_symbol(
                     tp_rr=_to_float(params.get("mr_tp_rr"), 1.2),
                     regime_meta=regime_meta,
                 )
+        elif strategy == "StrategyTrendRetrace70":
+            signal = generate_trend_retrace_70_signal(
+                window,
+                ema_fast_period=int(params.get("tr70_ema_fast_period", 20)),
+                ema_mid_period=int(params.get("tr70_ema_mid_period", 50)),
+                ema_slow_period=int(params.get("tr70_ema_slow_period", 200)),
+                pullback_lookback=int(params.get("tr70_pullback_lookback", 10)),
+                pullback_depth_pct=_to_float(params.get("tr70_pullback_depth_pct"), 0.35),
+                reclaim_buffer_pct=_to_float(params.get("tr70_reclaim_buffer_pct"), 0.05),
+                rsi_period=int(params.get("tr70_rsi_period", 14)),
+                rsi_min=_to_float(params.get("tr70_rsi_min"), 42.0),
+                rsi_max=_to_float(params.get("tr70_rsi_max"), 62.0),
+                stop_atr_mult=_to_float(params.get("tr70_stop_atr_mult"), 0.7),
+                min_stop_pct=_to_float(params.get("tr70_min_stop_pct"), 0.7),
+                max_stop_pct=_to_float(params.get("tr70_max_stop_pct"), 1.8),
+                tp_rr=_to_float(params.get("tr70_tp_rr"), 2.1),
+                min_volume_ratio=_to_float(params.get("tr70_min_volume_ratio"), 0.8),
+            )
         else:
             signal = generate_breakout_retest_signal(
                 window,
@@ -810,6 +831,11 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         params = backtest.params_json.copy()
         requested_strategy = backtest.strategy
         runtime_strategy = _resolve_runtime_strategy(backtest)
+        strategy_profile = get_strategy_profile(runtime_strategy)
+        profile_signal_params = strategy_profile.get("signal", {})
+        profile_risk_params = strategy_profile.get("risk", {})
+        profile_fee_params = strategy_profile.get("fees", {})
+        profile_backtest_params = strategy_profile.get("backtest", {})
 
         if requested_strategy == STRATEGY_BREAKOUT_RETEST_2:
             params["history_min_coverage_ratio"] = BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO
@@ -823,11 +849,17 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
 
         target_coverage_ratio = _to_float(
             params.get("history_target_coverage_ratio", params.get("target_coverage_ratio")),
-            DEFAULT_HISTORY_TARGET_COVERAGE_RATIO,
+            _to_float(
+                profile_backtest_params.get("history_target_coverage_ratio"),
+                DEFAULT_HISTORY_TARGET_COVERAGE_RATIO,
+            ),
         )
         min_coverage_ratio = _to_float(
             params.get("history_min_coverage_ratio", params.get("min_coverage_ratio")),
-            DEFAULT_HISTORY_MIN_COVERAGE_RATIO,
+            _to_float(
+                profile_backtest_params.get("history_min_coverage_ratio"),
+                DEFAULT_HISTORY_MIN_COVERAGE_RATIO,
+            ),
         )
         target_coverage_ratio = min(max(target_coverage_ratio, 0.0), 1.0)
         min_coverage_ratio = min(max(min_coverage_ratio, 0.0), 1.0)
@@ -835,6 +867,8 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             target_coverage_ratio = min_coverage_ratio
 
         input_tickers = _normalize_input_tickers(params.get("input_tickers"))
+        if not input_tickers:
+            input_tickers = _normalize_input_tickers(profile_backtest_params.get("input_tickers"))
         if not input_tickers:
             input_tickers = _normalize_input_tickers(
                 setting.universe_json.get("input_tickers") if setting else None
@@ -871,8 +905,16 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         backtest.params_json = params
         db.commit()
 
-        max_hold_hours = int(backtest.params_json.get("max_hold_hours", 72))
-        strategy_params = (setting.strategy_params_json.copy() if setting else {})
+        max_hold_hours = int(
+            backtest.params_json.get(
+                "max_hold_hours",
+                profile_risk_params.get("max_hold_hours", 72),
+            )
+        )
+        strategy_params = profile_signal_params.copy()
+        for key in list(strategy_params.keys()):
+            if key in params:
+                strategy_params[key] = params[key]
         optimization_meta: dict[str, Any] | None = None
         data_availability_report: list[dict] = []
 
@@ -924,10 +966,10 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                 candles_5m_by_symbol=candles_5m_by_symbol,
                 max_hold_hours=max_hold_hours,
                 strategy_params=strategy_params,
-                taker_fee_pct=_to_float((setting.fees_json if setting else {}).get("taker_fee_pct"), DEFAULT_BACKTEST_TAKER_FEE_PCT),
-                entry_slippage_pct=_to_float((setting.fees_json if setting else {}).get("backtest_entry_slippage_pct"), DEFAULT_BACKTEST_ENTRY_SLIPPAGE_PCT),
-                exit_slippage_pct=_to_float((setting.fees_json if setting else {}).get("backtest_exit_slippage_pct"), DEFAULT_BACKTEST_EXIT_SLIPPAGE_PCT),
-                stop_slippage_pct=_to_float((setting.fees_json if setting else {}).get("backtest_stop_slippage_pct"), DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT),
+                taker_fee_pct=_to_float(profile_fee_params.get("taker_fee_pct"), DEFAULT_BACKTEST_TAKER_FEE_PCT),
+                entry_slippage_pct=_to_float(profile_fee_params.get("backtest_entry_slippage_pct"), DEFAULT_BACKTEST_ENTRY_SLIPPAGE_PCT),
+                exit_slippage_pct=_to_float(profile_fee_params.get("backtest_exit_slippage_pct"), DEFAULT_BACKTEST_EXIT_SLIPPAGE_PCT),
+                stop_slippage_pct=_to_float(profile_fee_params.get("backtest_stop_slippage_pct"), DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT),
                 initial_equity=_to_float(backtest.params_json.get("initial_equity"), DEFAULT_BACKTEST_INITIAL_EQUITY),
             )
             chosen_config = optimization_meta.get("chosen_config") if optimization_meta else None
@@ -959,23 +1001,34 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             backtest.params_json = params
             db.commit()
 
-        fees_json = setting.fees_json if setting else {}
-        taker_fee_pct = _to_float(fees_json.get("taker_fee_pct"), DEFAULT_BACKTEST_TAKER_FEE_PCT)
+        taker_fee_pct = _to_float(
+            params.get("taker_fee_pct"),
+            _to_float(profile_fee_params.get("taker_fee_pct"), DEFAULT_BACKTEST_TAKER_FEE_PCT),
+        )
         entry_slippage_pct = _to_float(
-            fees_json.get("backtest_entry_slippage_pct"),
-            DEFAULT_BACKTEST_ENTRY_SLIPPAGE_PCT,
+            params.get("backtest_entry_slippage_pct"),
+            _to_float(
+                profile_fee_params.get("backtest_entry_slippage_pct"),
+                DEFAULT_BACKTEST_ENTRY_SLIPPAGE_PCT,
+            ),
         )
         exit_slippage_pct = _to_float(
-            fees_json.get("backtest_exit_slippage_pct"),
-            DEFAULT_BACKTEST_EXIT_SLIPPAGE_PCT,
+            params.get("backtest_exit_slippage_pct"),
+            _to_float(
+                profile_fee_params.get("backtest_exit_slippage_pct"),
+                DEFAULT_BACKTEST_EXIT_SLIPPAGE_PCT,
+            ),
         )
         stop_slippage_pct = _to_float(
-            fees_json.get("backtest_stop_slippage_pct"),
-            DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT,
+            params.get("backtest_stop_slippage_pct"),
+            _to_float(
+                profile_fee_params.get("backtest_stop_slippage_pct"),
+                DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT,
+            ),
         )
         initial_equity = _to_float(
             backtest.params_json.get("initial_equity"),
-            DEFAULT_BACKTEST_INITIAL_EQUITY,
+            _to_float(profile_risk_params.get("initial_equity"), DEFAULT_BACKTEST_INITIAL_EQUITY),
         )
 
         scenario_multipliers = {
@@ -1006,6 +1059,7 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             "taker_only": True,
             "strategy_requested": requested_strategy,
             "strategy_runtime": runtime_strategy,
+            "strategy_profile_source": "embedded_strategy_profile",
             "period_requested": {
                 "start_ts": requested_start.isoformat(),
                 "end_ts": requested_end.isoformat(),

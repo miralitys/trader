@@ -3,14 +3,14 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.events import publish_event
 from app.models.entities import Instrument, Order, Position, Setting, Signal, Trade
 from app.risk.manager import InstrumentConstraints, RiskManager, RiskParams, evaluate_entry_edge
 from app.services.coinbase import CoinbaseCredentials, coinbase_client
-from app.services.market_data import get_last_price
+from app.strategies.profiles import DEFAULT_INITIAL_EQUITY, get_strategy_profile
 
 
 def _load_live_credentials(setting: Setting) -> CoinbaseCredentials | None:
@@ -168,6 +168,27 @@ def _sync_live_fills(db: Session, credentials: CoinbaseCredentials) -> None:
     db.commit()
 
 
+def _risk_params_for_strategy(strategy: str | None) -> RiskParams:
+    cfg = get_strategy_profile(strategy).get("risk", {})
+    return RiskParams(
+        risk_per_trade_pct=float(cfg.get("risk_per_trade_pct", 1.0)),
+        daily_loss_limit_pct=float(cfg.get("daily_loss_limit_pct", 2.0)),
+        weekly_loss_limit_pct=float(cfg.get("weekly_loss_limit_pct", 5.0)),
+        max_positions=int(cfg.get("max_positions", 1)),
+        max_trades_per_day=int(cfg.get("max_trades_per_day", 2)),
+        max_hold_hours=int(cfg.get("max_hold_hours", 72)),
+        entry_ttl_minutes=int(cfg.get("entry_ttl_minutes", 60)),
+        consecutive_losses_pause=int(cfg.get("consecutive_losses_pause", 2)),
+        max_drawdown_pct=float(cfg.get("max_drawdown_pct", 10.0)),
+        max_position_notional_pct=float(cfg.get("max_position_notional_pct", 100.0)),
+        min_profit_to_cost_ratio=float(cfg.get("min_profit_to_cost_ratio", 1.2)),
+    )
+
+
+def _fees_for_strategy(strategy: str | None) -> dict:
+    return get_strategy_profile(strategy).get("fees", {})
+
+
 def run_live_execution_cycle(db: Session, setting: Setting) -> dict:
     if not setting.live_enabled:
         return {"status": "skipped", "reason": "live_disabled"}
@@ -190,47 +211,27 @@ def run_live_execution_cycle(db: Session, setting: Setting) -> dict:
         # Keep local state in sync with exchange first.
         _sync_live_fills(db, credentials)
 
-        # Risk-aware order placement for new active signals.
-        risk_params = RiskParams(
-            risk_per_trade_pct=float(setting.risk_params_json.get("risk_per_trade_pct", 1.0)),
-            daily_loss_limit_pct=float(setting.risk_params_json.get("daily_loss_limit_pct", 2.0)),
-            weekly_loss_limit_pct=float(setting.risk_params_json.get("weekly_loss_limit_pct", 5.0)),
-            max_positions=int(setting.risk_params_json.get("max_positions", 1)),
-            max_trades_per_day=int(setting.risk_params_json.get("max_trades_per_day", 2)),
-            max_hold_hours=int(setting.risk_params_json.get("max_hold_hours", 72)),
-            entry_ttl_minutes=int(setting.risk_params_json.get("entry_ttl_minutes", 60)),
-            consecutive_losses_pause=int(setting.risk_params_json.get("consecutive_losses_pause", 2)),
-            max_drawdown_pct=float(setting.risk_params_json.get("max_drawdown_pct", 10.0)),
-            max_position_notional_pct=float(
-                setting.risk_params_json.get("max_position_notional_pct", 100.0)
-            ),
-            min_profit_to_cost_ratio=float(
-                setting.risk_params_json.get("min_profit_to_cost_ratio", 1.2)
-            ),
-        )
-        risk = RiskManager(risk_params)
-
-        open_positions = int(
-            db.scalar(select(func.count(Position.id)).where(Position.mode == "live", Position.status == "open"))
-            or 0
-        )
-        trades_today = int(
-            db.scalar(
-                select(func.count(Trade.id)).where(
-                    Trade.mode == "live",
-                    Trade.opened_at >= datetime.now(timezone.utc).replace(
-                        hour=0, minute=0, second=0, microsecond=0
-                    ),
-                )
-            )
-            or 0
-        )
-
         active_signals = db.scalars(
             select(Signal).where(Signal.status == "active").order_by(Signal.created_at.asc())
         ).all()
 
         placed = 0
+        day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+        open_live_trades = db.scalars(
+            select(Trade).where(Trade.mode == "live", Trade.status == "open")
+        ).all()
+        today_live_trades = db.scalars(
+            select(Trade).where(Trade.mode == "live", Trade.opened_at >= day_start)
+        ).all()
+        open_positions_by_strategy: dict[str, int] = {}
+        trades_today_by_strategy: dict[str, int] = {}
+        for trade in open_live_trades:
+            strategy = str((trade.meta_json or {}).get("strategy") or "StrategyBreakoutRetest")
+            open_positions_by_strategy[strategy] = open_positions_by_strategy.get(strategy, 0) + 1
+        for trade in today_live_trades:
+            strategy = str((trade.meta_json or {}).get("strategy") or "StrategyBreakoutRetest")
+            trades_today_by_strategy[strategy] = trades_today_by_strategy.get(strategy, 0) + 1
+
         for signal in active_signals:
             instrument = db.scalar(select(Instrument).where(Instrument.id == signal.instrument_id))
             if not instrument:
@@ -246,14 +247,20 @@ def run_live_execution_cycle(db: Session, setting: Setting) -> dict:
             if has_live_order:
                 continue
 
-            mark = get_last_price(instrument.symbol) or signal.entry
-            equity_est = float(setting.risk_params_json.get("initial_equity", 10000.0))
+            strategy = signal.strategy or "StrategyBreakoutRetest"
+            risk_params = _risk_params_for_strategy(strategy)
+            risk = RiskManager(risk_params)
+            fees_cfg = _fees_for_strategy(strategy)
+            equity_est = DEFAULT_INITIAL_EQUITY
+
+            open_positions = open_positions_by_strategy.get(strategy, 0)
+            trades_today = trades_today_by_strategy.get(strategy, 0)
             edge_decision = evaluate_entry_edge(
                 entry=float(signal.entry),
                 take=float(signal.take),
-                maker_fee_pct=float(setting.fees_json.get("maker_fee_pct", 0.4)),
-                taker_fee_pct=float(setting.fees_json.get("taker_fee_pct", 0.6)),
-                market_exit_slippage_pct=float(setting.fees_json.get("market_exit_slippage_pct", 0.05)),
+                maker_fee_pct=float(fees_cfg.get("maker_fee_pct", 0.25)),
+                taker_fee_pct=float(fees_cfg.get("taker_fee_pct", 0.4)),
+                market_exit_slippage_pct=float(fees_cfg.get("market_exit_slippage_pct", 0.05)),
                 min_profit_to_cost_ratio=risk_params.min_profit_to_cost_ratio,
             )
             if not edge_decision.allowed:
@@ -300,8 +307,8 @@ def run_live_execution_cycle(db: Session, setting: Setting) -> dict:
                 qty_base=decision.qty_base,
             )
             placed += 1
-            open_positions += 1
-            trades_today += 1
+            open_positions_by_strategy[strategy] = open_positions + 1
+            trades_today_by_strategy[strategy] = trades_today + 1
 
         return {"status": "ok", "placed": placed}
     except Exception as exc:

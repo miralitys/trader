@@ -17,14 +17,48 @@ from app.risk.manager import (
     evaluate_entry_edge,
 )
 from app.services.market_data import get_last_price
+from app.strategies.profiles import DEFAULT_INITIAL_EQUITY, get_strategy_profile, resolve_strategy_scope
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _initial_equity(setting: Setting) -> float:
-    return float(setting.risk_params_json.get("initial_equity", 10000.0))
+def _profile_for_strategy(strategy: str | None) -> dict:
+    return get_strategy_profile(strategy)
+
+
+def _risk_config(strategy: str | None) -> dict:
+    return _profile_for_strategy(strategy).get("risk", {})
+
+
+def _fees_config(strategy: str | None) -> dict:
+    return _profile_for_strategy(strategy).get("fees", {})
+
+
+def _risk_params_for_strategy(strategy: str | None) -> RiskParams:
+    cfg = _risk_config(strategy)
+    return RiskParams(
+        risk_per_trade_pct=float(cfg.get("risk_per_trade_pct", 1.0)),
+        daily_loss_limit_pct=float(cfg.get("daily_loss_limit_pct", 2.0)),
+        weekly_loss_limit_pct=float(cfg.get("weekly_loss_limit_pct", 5.0)),
+        max_positions=int(cfg.get("max_positions", 1)),
+        max_trades_per_day=int(cfg.get("max_trades_per_day", 2)),
+        max_hold_hours=int(cfg.get("max_hold_hours", 72)),
+        entry_ttl_minutes=int(cfg.get("entry_ttl_minutes", 60)),
+        consecutive_losses_pause=int(cfg.get("consecutive_losses_pause", 2)),
+        max_drawdown_pct=float(cfg.get("max_drawdown_pct", 10.0)),
+        max_position_notional_pct=float(cfg.get("max_position_notional_pct", 100.0)),
+        min_profit_to_cost_ratio=float(cfg.get("min_profit_to_cost_ratio", 1.2)),
+    )
+
+
+def _trade_strategy(trade: Trade) -> str:
+    return str((trade.meta_json or {}).get("strategy") or "StrategyBreakoutRetest")
+
+
+def _initial_equity() -> float:
+    return DEFAULT_INITIAL_EQUITY
 
 
 def _latest_candle(db: Session, instrument_id: int, timeframe: str = "5m") -> Candle | None:
@@ -44,15 +78,15 @@ def _latest_price(db: Session, instrument: Instrument) -> float | None:
     return candle.close if candle else None
 
 
-def _count_trades_today(db: Session, mode: str) -> int:
+def _count_trades_today(db: Session, mode: str, strategy: str | None = None) -> int:
     start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
-    return int(
-        db.scalar(select(func.count(Trade.id)).where(Trade.mode == mode, Trade.opened_at >= start))
-        or 0
-    )
+    rows = db.scalars(select(Trade).where(Trade.mode == mode, Trade.opened_at >= start)).all()
+    if not strategy:
+        return len(rows)
+    return sum(1 for trade in rows if _trade_strategy(trade) == strategy)
 
 
-def _consecutive_losses(db: Session, mode: str, limit: int = 10) -> int:
+def _consecutive_losses(db: Session, mode: str, strategy: str | None = None, limit: int = 10) -> int:
     day_start = _now().replace(hour=0, minute=0, second=0, microsecond=0)
     rows = db.scalars(
         select(Trade)
@@ -67,12 +101,26 @@ def _consecutive_losses(db: Session, mode: str, limit: int = 10) -> int:
     ).all()
     losses = 0
     for trade in rows:
+        if strategy and _trade_strategy(trade) != strategy:
+            continue
         exit_reason = (trade.meta_json or {}).get("exit_reason")
         if trade.pnl < 0 and exit_reason == "stop":
             losses += 1
         else:
             break
     return losses
+
+
+def _count_open_trades(db: Session, mode: str, strategy: str | None = None) -> int:
+    rows = db.scalars(
+        select(Trade).where(
+            Trade.mode == mode,
+            Trade.status == "open",
+        )
+    ).all()
+    if not strategy:
+        return len(rows)
+    return sum(1 for trade in rows if _trade_strategy(trade) == strategy)
 
 
 def _daily_weekly_loss_pct(db: Session, mode: str, equity: float) -> tuple[float, float]:
@@ -103,8 +151,8 @@ def _daily_weekly_loss_pct(db: Session, mode: str, equity: float) -> tuple[float
     return daily_loss, weekly_loss
 
 
-def _compute_equity(db: Session, setting: Setting, mode: str = "paper") -> tuple[float, float, float]:
-    initial = _initial_equity(setting)
+def _compute_equity(db: Session, mode: str = "paper") -> tuple[float, float, float]:
+    initial = _initial_equity()
 
     realized = float(
         db.scalar(
@@ -171,7 +219,6 @@ def _cancel_related_exit_orders(db: Session, trade_id: int) -> None:
 
 def _close_position(
     db: Session,
-    setting: Setting,
     position: Position,
     trade: Trade,
     exit_price: float,
@@ -182,10 +229,11 @@ def _close_position(
     if qty <= 0:
         return
 
+    fees_cfg = _fees_config(_trade_strategy(trade))
     fee_pct = (
-        float(setting.fees_json.get("taker_fee_pct", 0.6))
+        float(fees_cfg.get("taker_fee_pct", 0.4))
         if is_market
-        else float(setting.fees_json.get("maker_fee_pct", 0.4))
+        else float(fees_cfg.get("maker_fee_pct", 0.25))
     )
     fee = qty * exit_price * (fee_pct / 100.0)
     pnl = (exit_price - trade.entry_price) * qty - fee
@@ -245,7 +293,6 @@ def _close_position(
 
 def _partial_close_breakout(
     db: Session,
-    setting: Setting,
     position: Position,
     trade: Trade,
     partial_price: float,
@@ -253,7 +300,8 @@ def _partial_close_breakout(
     qty = position.qty_base * 0.5
     if qty <= 0:
         return
-    fee_pct = float(setting.fees_json.get("maker_fee_pct", 0.4))
+    fees_cfg = _fees_config(_trade_strategy(trade))
+    fee_pct = float(fees_cfg.get("maker_fee_pct", 0.25))
     fee = qty * partial_price * (fee_pct / 100.0)
     pnl = (partial_price - trade.entry_price) * qty - fee
 
@@ -298,7 +346,6 @@ def _partial_close_breakout(
 
 def _place_entry_order(
     db: Session,
-    setting: Setting,
     signal: Signal,
     instrument: Instrument,
     decision: RiskDecision,
@@ -342,7 +389,7 @@ def _place_entry_order(
     return order
 
 
-def _fill_entry_order(db: Session, setting: Setting, order: Order, signal: Signal) -> None:
+def _fill_entry_order(db: Session, order: Order, signal: Signal) -> None:
     instrument = db.scalar(select(Instrument).where(Instrument.id == order.instrument_id))
     if not instrument:
         return
@@ -352,7 +399,8 @@ def _fill_entry_order(db: Session, setting: Setting, order: Order, signal: Signa
     entry_price = float(order.price or signal.entry)
     qty = float(order.size)
     qty_quote = qty * entry_price
-    entry_fee_pct = float(setting.fees_json.get("maker_fee_pct", 0.4))
+    fees_cfg = _fees_config(signal.strategy)
+    entry_fee_pct = float(fees_cfg.get("maker_fee_pct", 0.25))
     entry_fee = qty_quote * (entry_fee_pct / 100.0)
 
     trade = Trade(
@@ -461,34 +509,8 @@ def run_paper_execution_cycle(db: Session, setting: Setting) -> dict:
         signal.status = "expired"
     db.commit()
 
-    equity, _, drawdown_pct = _compute_equity(db, setting, mode="paper")
+    equity, _, drawdown_pct = _compute_equity(db, mode="paper")
     daily_loss_pct, weekly_loss_pct = _daily_weekly_loss_pct(db, "paper", equity)
-
-    risk_params = RiskParams(
-        risk_per_trade_pct=float(setting.risk_params_json.get("risk_per_trade_pct", 1.0)),
-        daily_loss_limit_pct=float(setting.risk_params_json.get("daily_loss_limit_pct", 2.0)),
-        weekly_loss_limit_pct=float(setting.risk_params_json.get("weekly_loss_limit_pct", 5.0)),
-        max_positions=int(setting.risk_params_json.get("max_positions", 1)),
-        max_trades_per_day=int(setting.risk_params_json.get("max_trades_per_day", 2)),
-        max_hold_hours=int(setting.risk_params_json.get("max_hold_hours", 72)),
-        entry_ttl_minutes=int(setting.risk_params_json.get("entry_ttl_minutes", 60)),
-        consecutive_losses_pause=int(setting.risk_params_json.get("consecutive_losses_pause", 2)),
-        max_drawdown_pct=float(setting.risk_params_json.get("max_drawdown_pct", 10.0)),
-        max_position_notional_pct=float(
-            setting.risk_params_json.get("max_position_notional_pct", 100.0)
-        ),
-        min_profit_to_cost_ratio=float(
-            setting.risk_params_json.get("min_profit_to_cost_ratio", 1.2)
-        ),
-    )
-    risk_manager = RiskManager(risk_params)
-
-    open_positions_count = int(
-        db.scalar(select(func.count(Position.id)).where(Position.mode == "paper", Position.status == "open"))
-        or 0
-    )
-    trades_today = _count_trades_today(db, "paper")
-    consecutive_losses = _consecutive_losses(db, "paper")
 
     active_signals = db.scalars(
         select(Signal).where(Signal.status == "active").order_by(Signal.created_at.asc())
@@ -512,12 +534,20 @@ def run_paper_execution_cycle(db: Session, setting: Setting) -> dict:
             signal.status = "cancelled"
             continue
 
+        strategy = signal.strategy or "StrategyBreakoutRetest"
+        fees_cfg = _fees_config(strategy)
+        risk_params = _risk_params_for_strategy(strategy)
+        risk_manager = RiskManager(risk_params)
+        open_positions_count = _count_open_trades(db, "paper", strategy=strategy)
+        trades_today = _count_trades_today(db, "paper", strategy=strategy)
+        consecutive_losses = _consecutive_losses(db, "paper", strategy=strategy)
+
         edge_decision = evaluate_entry_edge(
             entry=float(signal.entry),
             take=float(signal.take),
-            maker_fee_pct=float(setting.fees_json.get("maker_fee_pct", 0.4)),
-            taker_fee_pct=float(setting.fees_json.get("taker_fee_pct", 0.6)),
-            market_exit_slippage_pct=float(setting.fees_json.get("market_exit_slippage_pct", 0.05)),
+            maker_fee_pct=float(fees_cfg.get("maker_fee_pct", 0.25)),
+            taker_fee_pct=float(fees_cfg.get("taker_fee_pct", 0.4)),
+            market_exit_slippage_pct=float(fees_cfg.get("market_exit_slippage_pct", 0.05)),
             min_profit_to_cost_ratio=risk_params.min_profit_to_cost_ratio,
         )
         if not edge_decision.allowed:
@@ -575,11 +605,8 @@ def run_paper_execution_cycle(db: Session, setting: Setting) -> dict:
             )
             continue
 
-        _place_entry_order(db, setting, signal, instrument, decision)
+        _place_entry_order(db, signal, instrument, decision)
         placed_orders += 1
-        # Reserve slots in the same cycle to enforce portfolio/day limits consistently.
-        open_positions_count += 1
-        trades_today += 1
 
     all_open_buy_orders = db.scalars(
         select(Order).where(
@@ -623,7 +650,7 @@ def run_paper_execution_cycle(db: Session, setting: Setting) -> dict:
             continue
 
         if candle.low <= float(order.price) <= candle.high:
-            _fill_entry_order(db, setting, order, signal)
+            _fill_entry_order(db, order, signal)
             filled_entries += 1
 
     open_positions = db.scalars(
@@ -632,8 +659,6 @@ def run_paper_execution_cycle(db: Session, setting: Setting) -> dict:
 
     closed_positions = 0
     partials = 0
-    slippage_pct = float(setting.fees_json.get("market_exit_slippage_pct", 0.05)) / 100.0
-
     for position in open_positions:
         instrument = db.scalar(select(Instrument).where(Instrument.id == position.instrument_id))
         trade = _get_open_trade(db, "paper", position.instrument_id)
@@ -648,20 +673,22 @@ def run_paper_execution_cycle(db: Session, setting: Setting) -> dict:
         stop = float(meta.get("current_stop", meta.get("stop", 0.0)))
         take = float(meta.get("take", 0.0))
         strategy = meta.get("strategy", "")
+        fees_cfg = _fees_config(strategy)
+        slippage_pct = float(fees_cfg.get("market_exit_slippage_pct", 0.05)) / 100.0
 
         hold_hours = (_now() - trade.opened_at).total_seconds() / 3600
-        max_hold = float(setting.risk_params_json.get("max_hold_hours", 72))
+        max_hold = float(_risk_config(strategy).get("max_hold_hours", 72))
 
         if hold_hours >= max_hold:
             exit_price = candle.close * (1 - slippage_pct)
-            _close_position(db, setting, position, trade, exit_price, reason="timeout", is_market=True)
+            _close_position(db, position, trade, exit_price, reason="timeout", is_market=True)
             closed_positions += 1
             continue
 
         if strategy == "StrategyBreakoutRetest" and not meta.get("partial_taken", False):
             partial_tp = float(meta.get("partial_tp") or (trade.entry_price + (trade.entry_price - stop)))
             if candle.high >= partial_tp and position.qty_base > 0:
-                _partial_close_breakout(db, setting, position, trade, partial_tp)
+                _partial_close_breakout(db, position, trade, partial_tp)
                 partials += 1
                 meta = trade.meta_json.copy()
                 stop = float(meta.get("current_stop", stop))
@@ -687,33 +714,28 @@ def run_paper_execution_cycle(db: Session, setting: Setting) -> dict:
             final_tp = float(meta.get("final_tp", take))
             if candle.low <= stop:
                 exit_price = stop * (1 - slippage_pct)
-                _close_position(db, setting, position, trade, exit_price, reason="stop", is_market=True)
+                _close_position(db, position, trade, exit_price, reason="stop", is_market=True)
                 closed_positions += 1
             elif candle.high >= final_tp:
-                _close_position(db, setting, position, trade, final_tp, reason="take_profit", is_market=False)
+                _close_position(db, position, trade, final_tp, reason="take_profit", is_market=False)
                 closed_positions += 1
         else:
             if candle.low <= stop:
                 exit_price = stop * (1 - slippage_pct)
-                _close_position(db, setting, position, trade, exit_price, reason="stop", is_market=True)
+                _close_position(db, position, trade, exit_price, reason="stop", is_market=True)
                 closed_positions += 1
             elif candle.high >= take:
-                _close_position(db, setting, position, trade, take, reason="take_profit", is_market=False)
+                _close_position(db, position, trade, take, reason="take_profit", is_market=False)
                 closed_positions += 1
 
-    equity, peak, drawdown = _compute_equity(db, setting, mode="paper")
+    equity, peak, drawdown = _compute_equity(db, mode="paper")
 
-    max_dd_trigger = float(setting.risk_params_json.get("max_drawdown_pct", 10.0))
-    strict_action = setting.risk_params_json.get("strict_mode_action", "pause")
+    enabled = resolve_strategy_scope((setting.strategy_params_json or {}).get("trade_only_strategy", "both"))
+    max_dd_trigger = min(float(_risk_config(name).get("max_drawdown_pct", 10.0)) for name in enabled)
+    strict_action = "pause"
     if drawdown > max_dd_trigger:
         setting.strict_mode = True
-        if strict_action == "pause":
-            setting.kill_switch_paused = True
-        else:
-            params = setting.strategy_params_json.copy()
-            params["trade_only_strategy"] = "StrategyBreakoutRetest"
-            params["atr_threshold_pct_1h"] = max(1.0, float(params.get("atr_threshold_pct_1h", 4.0)) * 0.75)
-            setting.strategy_params_json = params
+        setting.kill_switch_paused = True
         db.commit()
         publish_event(
             "kill_switch",

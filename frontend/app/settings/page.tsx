@@ -40,12 +40,29 @@ const MR_STRATEGY_KEYS = [
   'mr_max_stop_pct',
   'mr_tp_rr'
 ]
+const TREND_RETRACE_70_KEYS = [
+  'tr70_ema_fast_period',
+  'tr70_ema_mid_period',
+  'tr70_ema_slow_period',
+  'tr70_pullback_lookback',
+  'tr70_pullback_depth_pct',
+  'tr70_reclaim_buffer_pct',
+  'tr70_rsi_period',
+  'tr70_rsi_min',
+  'tr70_rsi_max',
+  'tr70_stop_atr_mult',
+  'tr70_min_stop_pct',
+  'tr70_max_stop_pct',
+  'tr70_tp_rr',
+  'tr70_min_volume_ratio'
+]
 
 const RESERVED_STRATEGY_KEYS = new Set([
   ...GENERAL_STRATEGY_KEYS,
   ...BREAKOUT_STRATEGY_KEYS,
   ...PULLBACK_STRATEGY_KEYS,
   ...MR_STRATEGY_KEYS,
+  ...TREND_RETRACE_70_KEYS,
   'strategy_presets'
 ])
 
@@ -197,7 +214,12 @@ export default function SettingsPage() {
     <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-semibold">Settings</h1>
-        <p className="text-sm text-muted">Execution mode, risk controls, strategy filters and Coinbase credentials.</p>
+        <p className="text-sm text-muted">Execution mode, credentials and legacy config values.</p>
+      </div>
+
+      <div className="card p-3 text-sm">
+        Strategy execution now uses embedded per-strategy profiles from backend code (`strategies/profiles.py`).
+        Fields below for Risk/Strategy/Fees are legacy and do not control runtime behavior.
       </div>
 
       {error ? <div className="card p-3 text-bad text-sm whitespace-pre-wrap">{error}</div> : null}
@@ -270,7 +292,7 @@ export default function SettingsPage() {
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
         <div className="card p-4 space-y-3">
-          <h2 className="font-semibold">Risk params</h2>
+          <h2 className="font-semibold">Risk params (legacy)</h2>
           {Object.entries(settings.risk_params_json).map(([key, val]) => (
             <div key={key}>
               <label className="text-xs text-muted">{key}</label>
@@ -300,7 +322,7 @@ export default function SettingsPage() {
         </div>
 
         <div className="card p-4 space-y-3">
-          <h2 className="font-semibold">Strategy params / Fees</h2>
+          <h2 className="font-semibold">Strategy params / Fees (legacy)</h2>
           <div className="text-xs uppercase tracking-wide text-muted">General / Regime</div>
           {GENERAL_STRATEGY_KEYS.map((key) => renderStrategyParamInput(key))}
 
@@ -315,6 +337,10 @@ export default function SettingsPage() {
           <div className="pt-2 border-t border-line" />
           <div className="text-xs uppercase tracking-wide text-muted">MeanReversionHardStop</div>
           {MR_STRATEGY_KEYS.map((key) => renderStrategyParamInput(key))}
+
+          <div className="pt-2 border-t border-line" />
+          <div className="text-xs uppercase tracking-wide text-muted">TrendRetrace70</div>
+          {TREND_RETRACE_70_KEYS.map((key) => renderStrategyParamInput(key))}
 
           <div className="pt-2 border-t border-line" />
           <div className="text-xs uppercase tracking-wide text-muted">Strategy presets (for Backtests)</div>

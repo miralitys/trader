@@ -135,14 +135,14 @@ Universe selection для backtest:
 4. Ранжируем по ликвидности (24h notional/volume, иначе proxy по свечам).
 5. Выбираем TOP-5.
 6. Заменяем пары с недостаточной историей (на большую часть 24м) следующими по ликвидности с лучшим coverage, чтобы увеличить общий период данных.
-7. Пары с почти нулевой историей исключаются жёстким floor по покрытию (`history_min_coverage_ratio`, default 0.03).
+7. Пары с почти нулевой историей исключаются floor по покрытию (`history_min_coverage_ratio`, default в профиле стратегии).
 
 Execution model (default, conservative):
 - `taker-only` для всех входов/выходов.
 - `entry slippage = +0.10%`.
 - `exit slippage = -0.10%`.
 - `stop slippage = -0.20%`.
-- комиссии берутся как taker fee из `Settings.fees_json.taker_fee_pct`.
+- комиссии/slippage берутся из встроенного профиля выбранной стратегии (`backend/app/strategies/profiles.py`).
 - сигнал формируется только на закрытии свечи, вход возможен только со следующей свечи (no lookahead).
 
 Обязательные stress-сценарии:
@@ -183,7 +183,7 @@ Execution model (default, conservative):
 
 No DCA / no martingale.
 
-Параметры `MeanReversionHardStop` в `strategy_params_json`:
+Параметры `MeanReversionHardStop` (встроенный профиль стратегии):
 - `mr_bb_period` (default `20`)
 - `mr_bb_std` (default `2`)
 - `mr_rsi_period` (default `14`)
@@ -195,14 +195,12 @@ No DCA / no martingale.
 - `mr_tp_rr` (default `1.2`)
 
 ## Риск-менеджмент (default)
-- `risk_per_trade_pct = 1.0`
-- `max_positions = 1`
-- `max_trades_per_day = 2`
-- `daily_loss_limit_pct = 2.0`
-- `weekly_loss_limit_pct = 5.0`
-- `consecutive_losses_pause = 2`
-- `max_hold_hours = 72`
-- `entry_ttl_minutes = 60`
+- Используются per-strategy профили из `backend/app/strategies/profiles.py`:
+  - `risk` (лимиты/позиционирование),
+  - `fees` (maker/taker/slippage),
+  - `signal` (параметры генерации),
+  - `backtest` (coverage/input tickers).
+- Настройки из UI `Settings -> Risk params / Strategy params / Fees` больше не являются источником исполнения для стратегий.
 
 Position sizing:
 ```text
