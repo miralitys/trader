@@ -3,18 +3,54 @@
 import { useEffect, useState } from 'react'
 
 import { apiFetch } from '@/lib/api'
+import {
+  type BaseStrategy,
+  BUILTIN_STRATEGY_OPTIONS,
+  parseStrategyPresets,
+  strategyLabel,
+  type StrategyPreset
+} from '@/lib/strategies'
+
+type ScalarSettingValue = string | number | boolean
 
 type Settings = {
   paper_enabled: boolean
   live_enabled: boolean
   live_confirmed: boolean
-  risk_params_json: Record<string, number | boolean | string>
-  strategy_params_json: Record<string, number | boolean | string>
+  risk_params_json: Record<string, ScalarSettingValue>
+  strategy_params_json: Record<string, unknown>
   universe_json: Record<string, unknown>
   fees_json: Record<string, number>
   kill_switch_paused: boolean
   strict_mode: boolean
   coinbase_api_key_hint?: string | null
+}
+
+const GENERAL_STRATEGY_KEYS = ['ema200_filter_1h', 'atr_threshold_pct_1h', 'confirm_15m', 'trade_only_strategy']
+const BREAKOUT_STRATEGY_KEYS = ['breakout_lookback', 'breakout_retest_k_atr']
+const PULLBACK_STRATEGY_KEYS = ['pullback_rsi_threshold']
+const MR_STRATEGY_KEYS = [
+  'mr_bb_period',
+  'mr_bb_std',
+  'mr_rsi_period',
+  'mr_rsi_entry_threshold',
+  'mr_safety_ema_period',
+  'mr_lookback_stop',
+  'mr_stop_atr_buffer',
+  'mr_max_stop_pct',
+  'mr_tp_rr'
+]
+
+const RESERVED_STRATEGY_KEYS = new Set([
+  ...GENERAL_STRATEGY_KEYS,
+  ...BREAKOUT_STRATEGY_KEYS,
+  ...PULLBACK_STRATEGY_KEYS,
+  ...MR_STRATEGY_KEYS,
+  'strategy_presets'
+])
+
+function isScalarSettingValue(value: unknown): value is ScalarSettingValue {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
 }
 
 export default function SettingsPage() {
@@ -24,6 +60,87 @@ export default function SettingsPage() {
   const [liveConfirmationText, setLiveConfirmationText] = useState('')
   const [coinbaseKey, setCoinbaseKey] = useState('')
   const [coinbaseSecret, setCoinbaseSecret] = useState('')
+  const [newPresetName, setNewPresetName] = useState('')
+  const [newPresetBaseStrategy, setNewPresetBaseStrategy] = useState<BaseStrategy>('StrategyBreakoutRetest')
+
+  const strategyPresets = parseStrategyPresets(settings?.strategy_params_json?.strategy_presets)
+
+  function setStrategyPresets(presets: StrategyPreset[]) {
+    setSettings((prev) => {
+      if (!prev) return prev
+      return {
+        ...prev,
+        strategy_params_json: {
+          ...prev.strategy_params_json,
+          strategy_presets: presets
+        }
+      }
+    })
+  }
+
+  function addStrategyPreset() {
+    const name = newPresetName.trim()
+    if (!name) {
+      setError('Preset name is required')
+      return
+    }
+    if (strategyPresets.some((preset) => preset.name.toLowerCase() === name.toLowerCase())) {
+      setError('Preset with this name already exists')
+      return
+    }
+
+    setError(null)
+    setSuccess(null)
+    setStrategyPresets([
+      ...strategyPresets,
+      {
+        name,
+        base_strategy: newPresetBaseStrategy
+      }
+    ])
+    setNewPresetName('')
+  }
+
+  function removeStrategyPreset(name: string) {
+    setError(null)
+    setSuccess(null)
+    setStrategyPresets(strategyPresets.filter((preset) => preset.name !== name))
+  }
+
+  function updateStrategyParam(key: string, value: string) {
+    setSettings((prev) => {
+      if (!prev) return prev
+      const current = prev.strategy_params_json[key]
+      if (!isScalarSettingValue(current)) return prev
+
+      let parsed: ScalarSettingValue = value
+      if (typeof current === 'number') parsed = Number(value)
+      if (typeof current === 'boolean') parsed = value === 'true'
+
+      return {
+        ...prev,
+        strategy_params_json: {
+          ...prev.strategy_params_json,
+          [key]: parsed
+        }
+      }
+    })
+  }
+
+  function renderStrategyParamInput(key: string) {
+    const val = settings?.strategy_params_json[key]
+    if (!isScalarSettingValue(val)) return null
+    return (
+      <div key={key}>
+        <label className="text-xs text-muted">{key}</label>
+        <input
+          className="block mt-1 rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm w-full"
+          value={String(val)}
+          onChange={(e) => updateStrategyParam(key, e.target.value)}
+        />
+      </div>
+    )
+  }
 
   async function load() {
     try {
@@ -71,6 +188,10 @@ export default function SettingsPage() {
   if (!settings) {
     return <div>Loading settings...</div>
   }
+
+  const otherStrategyKeys = Object.keys(settings.strategy_params_json).filter(
+    (key) => !RESERVED_STRATEGY_KEYS.has(key) && isScalarSettingValue(settings.strategy_params_json[key])
+  )
 
   return (
     <div className="space-y-4">
@@ -122,7 +243,9 @@ export default function SettingsPage() {
 
       <div className="card p-4 space-y-4">
         <h2 className="font-semibold">Coinbase API credentials</h2>
-        <p className="text-xs text-muted">Raw keys are never returned in API responses. Store encrypted in DB only with SECRET_ENCRYPTION_KEY.</p>
+        <p className="text-xs text-muted">
+          Raw keys are never returned in API responses. Store encrypted in DB only with SECRET_ENCRYPTION_KEY.
+        </p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div>
             <label className="text-xs text-muted">API key</label>
@@ -159,7 +282,7 @@ export default function SettingsPage() {
                   setSettings((prev) => {
                     if (!prev) return prev
                     const current = prev.risk_params_json[key]
-                    let parsed: string | number | boolean = value
+                    let parsed: ScalarSettingValue = value
                     if (typeof current === 'number') parsed = Number(value)
                     if (typeof current === 'boolean') parsed = value === 'true'
                     return {
@@ -178,32 +301,93 @@ export default function SettingsPage() {
 
         <div className="card p-4 space-y-3">
           <h2 className="font-semibold">Strategy params / Fees</h2>
-          {Object.entries(settings.strategy_params_json).map(([key, val]) => (
-            <div key={key}>
-              <label className="text-xs text-muted">{key}</label>
-              <input
-                className="block mt-1 rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm w-full"
-                value={String(val)}
-                onChange={(e) => {
-                  const value = e.target.value
-                  setSettings((prev) => {
-                    if (!prev) return prev
-                    const current = prev.strategy_params_json[key]
-                    let parsed: string | number | boolean = value
-                    if (typeof current === 'number') parsed = Number(value)
-                    if (typeof current === 'boolean') parsed = value === 'true'
-                    return {
-                      ...prev,
-                      strategy_params_json: {
-                        ...prev.strategy_params_json,
-                        [key]: parsed
-                      }
-                    }
-                  })
-                }}
-              />
+          <div className="text-xs uppercase tracking-wide text-muted">General / Regime</div>
+          {GENERAL_STRATEGY_KEYS.map((key) => renderStrategyParamInput(key))}
+
+          <div className="pt-2 border-t border-line" />
+          <div className="text-xs uppercase tracking-wide text-muted">BreakoutRetest</div>
+          {BREAKOUT_STRATEGY_KEYS.map((key) => renderStrategyParamInput(key))}
+
+          <div className="pt-2 border-t border-line" />
+          <div className="text-xs uppercase tracking-wide text-muted">PullbackToTrend</div>
+          {PULLBACK_STRATEGY_KEYS.map((key) => renderStrategyParamInput(key))}
+
+          <div className="pt-2 border-t border-line" />
+          <div className="text-xs uppercase tracking-wide text-muted">MeanReversionHardStop</div>
+          {MR_STRATEGY_KEYS.map((key) => renderStrategyParamInput(key))}
+
+          <div className="pt-2 border-t border-line" />
+          <div className="text-xs uppercase tracking-wide text-muted">Strategy presets (for Backtests)</div>
+          <p className="text-xs text-muted">
+            Add custom strategy entries for the Backtests dropdown. Each preset uses one built-in strategy engine.
+          </p>
+
+          <div className="grid grid-cols-1 md:grid-cols-[1fr_220px_auto] gap-2">
+            <input
+              className="rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm"
+              value={newPresetName}
+              onChange={(e) => setNewPresetName(e.target.value)}
+              placeholder="Preset name (e.g. Breakout Conservative)"
+            />
+            <select
+              className="rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm"
+              value={newPresetBaseStrategy}
+              onChange={(e) => setNewPresetBaseStrategy(e.target.value as BaseStrategy)}
+            >
+              {BUILTIN_STRATEGY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="rounded-lg bg-accent text-white px-3 py-1 text-sm"
+              onClick={addStrategyPreset}
+            >
+              Add
+            </button>
+          </div>
+
+          {strategyPresets.length ? (
+            <div className="space-y-2">
+              {strategyPresets.map((preset) => (
+                <div
+                  key={preset.name.toLowerCase()}
+                  className="rounded-lg border border-line bg-panelSoft p-2 flex items-center justify-between gap-2"
+                >
+                  <div>
+                    <div className="text-sm font-medium">{preset.name}</div>
+                    <div className="text-xs text-muted">{strategyLabel(preset.base_strategy)}</div>
+                    {preset.backtest_params ? (
+                      <div className="text-xs text-muted">
+                        min_cov: {preset.backtest_params.history_min_coverage_ratio ?? '-'} | target_cov:{' '}
+                        {preset.backtest_params.history_target_coverage_ratio ?? '-'} | tickers:{' '}
+                        {preset.backtest_params.input_tickers?.length ?? 0}
+                      </div>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-line bg-panel px-2 py-1 text-xs"
+                    onClick={() => removeStrategyPreset(preset.name)}
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
             </div>
-          ))}
+          ) : (
+            <div className="text-xs text-muted">No presets yet.</div>
+          )}
+
+          {otherStrategyKeys.length ? (
+            <>
+              <div className="pt-2 border-t border-line" />
+              <div className="text-xs uppercase tracking-wide text-muted">Other strategy params</div>
+              {otherStrategyKeys.map((key) => renderStrategyParamInput(key))}
+            </>
+          ) : null}
 
           <div className="pt-2 border-t border-line" />
 

@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from app.strategies.breakout_retest import generate_breakout_retest_signal
+from app.strategies.mean_reversion_hard_stop import generate_mean_reversion_hard_stop_signal
 from app.strategies.types import CandleData
 
 
@@ -35,3 +36,49 @@ def test_no_lookahead_breakout_uses_only_available_candles():
     )
     with_future = generate_breakout_retest_signal(candles + [future])
     assert with_future is not None
+
+
+def test_no_lookahead_mean_reversion_triggers_only_after_confirmation_close():
+    now = datetime.now(timezone.utc)
+    candles: list[CandleData] = []
+
+    for i in range(260):
+        p = 90 + i * 0.12
+        candles.append(
+            CandleData(
+                ts=now + timedelta(minutes=5 * i),
+                open=p - 0.05,
+                high=p + 0.20,
+                low=p - 0.20,
+                close=p,
+                volume=200 + i,
+            )
+        )
+
+    setup = candles[-1]
+    setup_close = setup.close - 4.0
+    candles[-1] = CandleData(
+        ts=setup.ts,
+        open=setup.close - 0.2,
+        high=setup.close - 0.1,
+        low=setup_close - 0.3,
+        close=setup_close,
+        volume=setup.volume * 1.5,
+    )
+
+    before_trigger = generate_mean_reversion_hard_stop_signal(candles, regime_meta={"ema200_slope": 0.1})
+    assert before_trigger is None
+
+    trigger = CandleData(
+        ts=now + timedelta(minutes=5 * 260),
+        open=setup_close,
+        high=setup_close + 3.0,
+        low=setup_close - 0.2,
+        close=setup_close + 2.5,
+        volume=500,
+    )
+    after_trigger = generate_mean_reversion_hard_stop_signal(
+        candles + [trigger],
+        regime_meta={"ema200_slope": 0.1},
+    )
+    assert after_trigger is not None

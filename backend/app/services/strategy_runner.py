@@ -10,6 +10,7 @@ from app.core.metrics import SIGNALS_CREATED
 from app.models.entities import Candle, Instrument, Setting, Signal
 from app.strategies.breakout_retest import generate_breakout_retest_signal
 from app.strategies.indicators import atr, ema
+from app.strategies.mean_reversion_hard_stop import generate_mean_reversion_hard_stop_signal
 from app.strategies.pullback_trend import generate_pullback_signal
 from app.strategies.types import CandleData, SignalPlan
 
@@ -83,6 +84,16 @@ def _signal_exists(db: Session, instrument_id: int, strategy: str) -> bool:
     return row is not None
 
 
+def _has_active_signal(db: Session, instrument_id: int) -> bool:
+    row = db.scalar(
+        select(Signal).where(
+            Signal.instrument_id == instrument_id,
+            Signal.status == "active",
+        )
+    )
+    return row is not None
+
+
 def _persist_signal(db: Session, instrument: Instrument, plan: SignalPlan, ttl_minutes: int) -> Signal:
     now = datetime.now(timezone.utc)
     signal = Signal(
@@ -129,6 +140,7 @@ def run_strategy_cycle(db: Session, setting: Setting) -> dict:
     risk_params = setting.risk_params_json
 
     generated = 0
+    suppressed_due_active = 0
 
     for symbol in top_symbols:
         instrument = db.scalar(select(Instrument).where(Instrument.symbol == symbol))
@@ -152,9 +164,15 @@ def run_strategy_cycle(db: Session, setting: Setting) -> dict:
                 continue
             regime_meta.update(conf_meta)
 
-        only_strategy = strategy_params.get("trade_only_strategy", "both")
+        # One active signal per symbol across all strategies to avoid conflicting entries.
+        if _has_active_signal(db, instrument.id):
+            suppressed_due_active += 1
+            continue
 
-        if only_strategy in ("both", "StrategyBreakoutRetest", "breakout"):
+        only_strategy = strategy_params.get("trade_only_strategy", "both")
+        created_for_symbol = False
+
+        if only_strategy in ("both", "StrategyBreakoutRetest", "breakout") and not created_for_symbol:
             if not _signal_exists(db, instrument.id, "StrategyBreakoutRetest"):
                 breakout_signal = generate_breakout_retest_signal(
                     candles_5m=candles_5m,
@@ -170,8 +188,9 @@ def run_strategy_cycle(db: Session, setting: Setting) -> dict:
                         ttl_minutes=int(risk_params.get("entry_ttl_minutes", 60)),
                     )
                     generated += 1
+                    created_for_symbol = True
 
-        if only_strategy in ("both", "StrategyPullbackToTrend", "pullback"):
+        if only_strategy in ("both", "StrategyPullbackToTrend", "pullback") and not created_for_symbol:
             if not _signal_exists(db, instrument.id, "StrategyPullbackToTrend"):
                 pullback_signal = generate_pullback_signal(
                     candles_5m=candles_5m,
@@ -186,5 +205,36 @@ def run_strategy_cycle(db: Session, setting: Setting) -> dict:
                         ttl_minutes=int(risk_params.get("entry_ttl_minutes", 60)),
                     )
                     generated += 1
+                    created_for_symbol = True
 
-    return {"generated": generated, "symbols_checked": len(top_symbols)}
+        if only_strategy in ("both", "MeanReversionHardStop", "mean_reversion") and not created_for_symbol:
+            if not _signal_exists(db, instrument.id, "MeanReversionHardStop"):
+                mean_signal = generate_mean_reversion_hard_stop_signal(
+                    candles_5m=candles_5m,
+                    bb_period=int(strategy_params.get("mr_bb_period", 20)),
+                    bb_std=float(strategy_params.get("mr_bb_std", 2.0)),
+                    rsi_period=int(strategy_params.get("mr_rsi_period", 14)),
+                    rsi_entry_threshold=float(strategy_params.get("mr_rsi_entry_threshold", 30.0)),
+                    safety_ema_period=int(strategy_params.get("mr_safety_ema_period", 200)),
+                    lookback_stop=int(strategy_params.get("mr_lookback_stop", 15)),
+                    stop_atr_buffer=float(strategy_params.get("mr_stop_atr_buffer", 0.2)),
+                    max_stop_pct=float(strategy_params.get("mr_max_stop_pct", 0.03)),
+                    tp_rr=float(strategy_params.get("mr_tp_rr", 1.2)),
+                    regime_meta=regime_meta,
+                )
+                if mean_signal:
+                    mean_signal.meta.update({"regime": regime_meta})
+                    _persist_signal(
+                        db,
+                        instrument,
+                        mean_signal,
+                        ttl_minutes=int(risk_params.get("entry_ttl_minutes", 60)),
+                    )
+                    generated += 1
+                    created_for_symbol = True
+
+    return {
+        "generated": generated,
+        "symbols_checked": len(top_symbols),
+        "suppressed_due_active_signal": suppressed_due_active,
+    }

@@ -4,6 +4,14 @@ import { useEffect, useMemo, useState } from 'react'
 import { createChart, UTCTimestamp } from 'lightweight-charts'
 
 import { apiBase, apiFetch } from '@/lib/api'
+import {
+  type BaseStrategy,
+  BUILTIN_STRATEGY_OPTIONS,
+  isBaseStrategy,
+  parseStrategyPresets,
+  strategyLabel,
+  type StrategyPreset
+} from '@/lib/strategies'
 
 type Backtest = {
   id: number
@@ -12,9 +20,16 @@ type Backtest = {
   start_ts: string
   end_ts: string
   created_at: string
+  params_json: Record<string, unknown>
   metrics_json: Record<string, unknown>
   equity_curve_json: Array<{ ts: string; equity: number }>
 }
+
+type SettingsForBacktests = {
+  strategy_params_json?: Record<string, unknown>
+}
+
+const DEFAULT_STRATEGY_SELECTION = 'builtin:StrategyBreakoutRetest'
 
 function EquityMiniChart({ points }: { points: Array<{ ts: string; equity: number }> }) {
   const id = useMemo(() => `equity-${Math.random().toString(36).slice(2)}`, [])
@@ -42,6 +57,70 @@ function EquityMiniChart({ points }: { points: Array<{ ts: string; equity: numbe
   return <div id={id} className="w-full" />
 }
 
+function presetOptionValue(name: string): string {
+  return `preset:${encodeURIComponent(name)}`
+}
+
+function parsePresetOptionValue(selection: string): string | null {
+  if (!selection.startsWith('preset:')) return null
+  return decodeURIComponent(selection.slice('preset:'.length))
+}
+
+function resolveSelection(
+  selection: string,
+  presets: StrategyPreset[]
+): { strategy: string; params: Record<string, unknown> } {
+  const presetName = parsePresetOptionValue(selection)
+  if (presetName) {
+    const preset = presets.find((item) => item.name === presetName)
+    if (preset) {
+      const params: Record<string, unknown> = {
+        strategy_base_strategy: preset.base_strategy,
+        strategy_preset_name: preset.name
+      }
+      if (preset.backtest_params?.history_min_coverage_ratio !== undefined) {
+        params.history_min_coverage_ratio = preset.backtest_params.history_min_coverage_ratio
+      }
+      if (preset.backtest_params?.history_target_coverage_ratio !== undefined) {
+        params.history_target_coverage_ratio = preset.backtest_params.history_target_coverage_ratio
+      }
+      if (preset.backtest_params?.input_tickers?.length) {
+        params.input_tickers = preset.backtest_params.input_tickers
+      }
+      return {
+        strategy: preset.name,
+        params
+      }
+    }
+  }
+
+  const builtinValue = selection.startsWith('builtin:') ? selection.slice('builtin:'.length) : selection
+  if (isBaseStrategy(builtinValue)) {
+    return {
+      strategy: builtinValue,
+      params: {}
+    }
+  }
+
+  return {
+    strategy: 'StrategyBreakoutRetest',
+    params: {}
+  }
+}
+
+function displayStrategy(row: Backtest): string {
+  const baseFromParams = row.params_json?.strategy_base_strategy
+  if (isBaseStrategy(baseFromParams)) {
+    return `${row.strategy} (${strategyLabel(baseFromParams)})`
+  }
+
+  if (isBaseStrategy(row.strategy)) {
+    return strategyLabel(row.strategy)
+  }
+
+  return row.strategy
+}
+
 export default function BacktestsPage() {
   const defaultEnd = new Date()
   const defaultStart = new Date(defaultEnd)
@@ -51,7 +130,8 @@ export default function BacktestsPage() {
   const [selected, setSelected] = useState<Backtest | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
-  const [strategy, setStrategy] = useState('StrategyBreakoutRetest')
+  const [strategySelection, setStrategySelection] = useState(DEFAULT_STRATEGY_SELECTION)
+  const [strategyPresets, setStrategyPresets] = useState<StrategyPreset[]>([])
   const [startTs, setStartTs] = useState(defaultStart.toISOString())
   const [endTs, setEndTs] = useState(defaultEnd.toISOString())
 
@@ -61,30 +141,49 @@ export default function BacktestsPage() {
     return row.metrics_json as Record<string, number>
   }
 
-  async function load() {
+  async function loadBacktests() {
     try {
       const data = await apiFetch<Backtest[]>('/api/backtests')
       setRows(data)
-      if (!selected && data.length) setSelected(data[0])
+      setSelected((prev) => {
+        if (!data.length) return null
+        if (!prev) return data[0]
+        return data.find((item) => item.id === prev.id) || data[0]
+      })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load backtests')
     }
+  }
+
+  async function loadStrategyPresets() {
+    try {
+      const settings = await apiFetch<SettingsForBacktests>('/api/settings')
+      setStrategyPresets(parseStrategyPresets(settings.strategy_params_json?.strategy_presets))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load strategy presets')
+    }
+  }
+
+  async function loadAll() {
+    setError(null)
+    await Promise.all([loadBacktests(), loadStrategyPresets()])
   }
 
   async function runBacktest() {
     setRunning(true)
     setError(null)
     try {
+      const resolved = resolveSelection(strategySelection, strategyPresets)
       await apiFetch('/api/backtests/run', {
         method: 'POST',
         body: JSON.stringify({
-          strategy,
+          strategy: resolved.strategy,
           start_ts: startTs || undefined,
           end_ts: endTs || undefined,
-          params: {}
+          params: resolved.params
         })
       })
-      await load()
+      await loadBacktests()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to run backtest')
     } finally {
@@ -93,8 +192,16 @@ export default function BacktestsPage() {
   }
 
   useEffect(() => {
-    load()
+    loadAll()
   }, [])
+
+  useEffect(() => {
+    const presetName = parsePresetOptionValue(strategySelection)
+    if (!presetName) return
+    if (!strategyPresets.some((preset) => preset.name === presetName)) {
+      setStrategySelection(DEFAULT_STRATEGY_SELECTION)
+    }
+  }, [strategySelection, strategyPresets])
 
   return (
     <div className="space-y-4">
@@ -110,11 +217,23 @@ export default function BacktestsPage() {
           <label className="text-xs text-muted">Strategy</label>
           <select
             className="block mt-1 rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm w-full"
-            value={strategy}
-            onChange={(e) => setStrategy(e.target.value)}
+            value={strategySelection}
+            onChange={(e) => setStrategySelection(e.target.value)}
           >
-            <option value="StrategyBreakoutRetest">BreakoutRetest</option>
-            <option value="StrategyPullbackToTrend">PullbackToTrend</option>
+            {BUILTIN_STRATEGY_OPTIONS.map((option) => (
+              <option key={option.value} value={`builtin:${option.value}`}>
+                {option.label}
+              </option>
+            ))}
+            {strategyPresets.length ? (
+              <optgroup label="Presets from Settings">
+                {strategyPresets.map((preset) => (
+                  <option key={preset.name.toLowerCase()} value={presetOptionValue(preset.name)}>
+                    {preset.name} ({strategyLabel(preset.base_strategy)})
+                  </option>
+                ))}
+              </optgroup>
+            ) : null}
           </select>
         </div>
         <div>
@@ -141,7 +260,7 @@ export default function BacktestsPage() {
           >
             {running ? 'Running...' : 'Run'}
           </button>
-          <button className="rounded-lg border border-line bg-panel px-3 py-2 text-sm" onClick={load}>
+          <button className="rounded-lg border border-line bg-panel px-3 py-2 text-sm" onClick={loadAll}>
             Refresh
           </button>
         </div>
@@ -170,7 +289,7 @@ export default function BacktestsPage() {
                   onClick={() => setSelected(r)}
                 >
                   <td className="py-2">{r.id}</td>
-                  <td>{r.strategy}</td>
+                  <td>{displayStrategy(r)}</td>
                   <td>{r.status}</td>
                   <td>{baseMetrics(r)?.trades ?? '-'}</td>
                   <td>{Number(baseMetrics(r)?.profit_factor ?? 0).toFixed(2)}</td>
@@ -190,9 +309,12 @@ export default function BacktestsPage() {
             <div className="space-y-3 mt-2">
               <div className="text-sm">
                 <div><span className="text-muted">ID:</span> {selected.id}</div>
-                <div><span className="text-muted">Strategy:</span> {selected.strategy}</div>
+                <div><span className="text-muted">Strategy:</span> {displayStrategy(selected)}</div>
                 <div><span className="text-muted">Status:</span> {selected.status}</div>
-                <div><span className="text-muted">Period:</span> {new Date(selected.start_ts).toLocaleDateString()} - {new Date(selected.end_ts).toLocaleDateString()}</div>
+                <div>
+                  <span className="text-muted">Period:</span> {new Date(selected.start_ts).toLocaleDateString()} -{' '}
+                  {new Date(selected.end_ts).toLocaleDateString()}
+                </div>
               </div>
 
               <div className="text-xs text-muted">Equity curve</div>

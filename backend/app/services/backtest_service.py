@@ -11,6 +11,8 @@ from app.core.config import DEFAULT_UNIVERSE_INPUT
 from app.models.entities import Backtest, Candle, Instrument, Setting
 from app.services.coinbase import coinbase_client
 from app.strategies.breakout_retest import generate_breakout_retest_signal
+from app.strategies.indicators import atr, ema
+from app.strategies.mean_reversion_hard_stop import generate_mean_reversion_hard_stop_signal
 from app.strategies.pullback_trend import generate_pullback_signal
 from app.strategies.types import CandleData
 
@@ -21,6 +23,11 @@ DEFAULT_BACKTEST_STOP_SLIPPAGE_PCT = 0.20
 DEFAULT_BACKTEST_TAKER_FEE_PCT = 0.60
 DEFAULT_HISTORY_TARGET_COVERAGE_RATIO = 0.20
 DEFAULT_HISTORY_MIN_COVERAGE_RATIO = 0.03
+SUPPORTED_BACKTEST_STRATEGIES = {
+    "StrategyBreakoutRetest",
+    "StrategyPullbackToTrend",
+    "MeanReversionHardStop",
+}
 
 
 @dataclass
@@ -79,6 +86,33 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _normalize_input_tickers(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        ticker = str(item).strip().upper()
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        normalized.append(ticker)
+    return normalized
+
+
+def _resolve_runtime_strategy(backtest: Backtest) -> str:
+    params = backtest.params_json or {}
+    requested_base = params.get("strategy_base_strategy")
+    if isinstance(requested_base, str) and requested_base in SUPPORTED_BACKTEST_STRATEGIES:
+        return requested_base
+
+    if backtest.strategy in SUPPORTED_BACKTEST_STRATEGIES:
+        return backtest.strategy
+
+    return "StrategyBreakoutRetest"
 
 
 def _load_candles(
@@ -316,22 +350,85 @@ def _compute_effective_common_start(
     return common_start
 
 
+def _regime_filter_1h(
+    candles_1h: list[CandleData],
+    atr_threshold_pct: float,
+) -> tuple[bool, dict]:
+    if len(candles_1h) < 220:
+        return False, {"reason": "insufficient_1h_history"}
+
+    closes = [x.close for x in candles_1h]
+    highs = [x.high for x in candles_1h]
+    lows = [x.low for x in candles_1h]
+
+    ema200 = ema(closes, 200)
+    ema_now = ema200[-1]
+    ema_prev = ema200[-5]
+    slope = ema_now - ema_prev
+
+    atr_1h = atr(highs, lows, closes, 14)[-1]
+    atr_pct = (atr_1h / max(closes[-1], 1e-8)) * 100.0
+
+    passed = closes[-1] > ema_now and slope >= 0 and atr_pct < atr_threshold_pct
+    return passed, {
+        "close_1h": closes[-1],
+        "ema200_1h": ema_now,
+        "ema200_slope": slope,
+        "atr_pct_1h": atr_pct,
+    }
+
+
 def _simulate_raw_trades_for_symbol(
     symbol: str,
     candles_5m: list[CandleData],
     strategy: str,
     max_hold_hours: int,
+    strategy_params: dict | None = None,
+    candles_1h: list[CandleData] | None = None,
 ) -> list[RawTrade]:
     trades: list[RawTrade] = []
     i = 60
+    params = strategy_params or {}
+    hourly = candles_1h or []
+    hourly_idx = -1
 
     while i < len(candles_5m) - 2:
         window = candles_5m[: i + 1]
-        signal = (
-            generate_pullback_signal(window)
-            if strategy == "StrategyPullbackToTrend"
-            else generate_breakout_retest_signal(window)
-        )
+
+        signal = None
+        if strategy == "StrategyPullbackToTrend":
+            signal = generate_pullback_signal(
+                window,
+                rsi_threshold=_to_float(params.get("pullback_rsi_threshold"), 45.0),
+            )
+        elif strategy == "MeanReversionHardStop":
+            while hourly_idx + 1 < len(hourly) and hourly[hourly_idx + 1].ts <= window[-1].ts:
+                hourly_idx += 1
+            regime_window = hourly[: hourly_idx + 1] if hourly_idx >= 0 else []
+            regime_ok, regime_meta = _regime_filter_1h(
+                regime_window,
+                atr_threshold_pct=_to_float(params.get("atr_threshold_pct_1h"), 4.0),
+            )
+            if regime_ok:
+                signal = generate_mean_reversion_hard_stop_signal(
+                    window,
+                    bb_period=int(params.get("mr_bb_period", 20)),
+                    bb_std=_to_float(params.get("mr_bb_std"), 2.0),
+                    rsi_period=int(params.get("mr_rsi_period", 14)),
+                    rsi_entry_threshold=_to_float(params.get("mr_rsi_entry_threshold"), 30.0),
+                    safety_ema_period=int(params.get("mr_safety_ema_period", 200)),
+                    lookback_stop=int(params.get("mr_lookback_stop", 15)),
+                    stop_atr_buffer=_to_float(params.get("mr_stop_atr_buffer"), 0.2),
+                    max_stop_pct=_to_float(params.get("mr_max_stop_pct"), 0.03),
+                    tp_rr=_to_float(params.get("mr_tp_rr"), 1.2),
+                    regime_meta=regime_meta,
+                )
+        else:
+            signal = generate_breakout_retest_signal(
+                window,
+                lookback=int(params.get("breakout_lookback", 20)),
+                retest_k_atr=_to_float(params.get("breakout_retest_k_atr"), 0.3),
+            )
 
         if not signal:
             i += 1
@@ -506,12 +603,15 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         requested_start = backtest.start_ts
         requested_end = backtest.end_ts
         params = backtest.params_json.copy()
+        requested_strategy = backtest.strategy
+        runtime_strategy = _resolve_runtime_strategy(backtest)
+
         target_coverage_ratio = _to_float(
-            params.get("history_target_coverage_ratio"),
+            params.get("history_target_coverage_ratio", params.get("target_coverage_ratio")),
             DEFAULT_HISTORY_TARGET_COVERAGE_RATIO,
         )
         min_coverage_ratio = _to_float(
-            params.get("history_min_coverage_ratio"),
+            params.get("history_min_coverage_ratio", params.get("min_coverage_ratio")),
             DEFAULT_HISTORY_MIN_COVERAGE_RATIO,
         )
         target_coverage_ratio = min(max(target_coverage_ratio, 0.0), 1.0)
@@ -519,15 +619,17 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         if min_coverage_ratio > target_coverage_ratio:
             target_coverage_ratio = min_coverage_ratio
 
-        input_tickers = (
-            setting.universe_json.get("input_tickers", DEFAULT_UNIVERSE_INPUT)
-            if setting
-            else DEFAULT_UNIVERSE_INPUT
-        )
+        input_tickers = _normalize_input_tickers(params.get("input_tickers"))
+        if not input_tickers:
+            input_tickers = _normalize_input_tickers(
+                setting.universe_json.get("input_tickers") if setting else None
+            )
+        if not input_tickers:
+            input_tickers = _normalize_input_tickers(DEFAULT_UNIVERSE_INPUT)
 
         candidates, universe_source = _build_universe_candidates(
             db,
-            input_tickers=[str(x).upper() for x in input_tickers],
+            input_tickers=input_tickers,
             start_ts=requested_start,
             end_ts=requested_end,
         )
@@ -548,11 +650,14 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         params["period_effective_end_ts"] = requested_end.isoformat()
         params["history_target_coverage_ratio"] = target_coverage_ratio
         params["history_min_coverage_ratio"] = min_coverage_ratio
+        params["input_tickers"] = input_tickers
+        params["strategy_requested"] = requested_strategy
+        params["strategy_runtime"] = runtime_strategy
         backtest.params_json = params
         db.commit()
 
-        strategy = backtest.strategy
         max_hold_hours = int(backtest.params_json.get("max_hold_hours", 72))
+        strategy_params = setting.strategy_params_json if setting else {}
 
         raw_trades: list[RawTrade] = []
         data_availability_report: list[dict] = []
@@ -586,11 +691,23 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             if len(candles_5m) < 100:
                 continue
 
+            candles_1h: list[CandleData] = []
+            if runtime_strategy == "MeanReversionHardStop":
+                candles_1h = _load_candles(
+                    db,
+                    instrument.id,
+                    "1h",
+                    effective_start - timedelta(days=30),
+                    requested_end,
+                )
+
             symbol_trades = _simulate_raw_trades_for_symbol(
                 symbol=symbol,
                 candles_5m=candles_5m,
-                strategy=strategy,
+                strategy=runtime_strategy,
                 max_hold_hours=max_hold_hours,
+                strategy_params=strategy_params,
+                candles_1h=candles_1h,
             )
             raw_trades.extend(symbol_trades)
 
@@ -641,6 +758,8 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         assumptions = {
             "execution_model": "CONSERVATIVE_TAKER_ONLY",
             "taker_only": True,
+            "strategy_requested": requested_strategy,
+            "strategy_runtime": runtime_strategy,
             "period_requested": {
                 "start_ts": requested_start.isoformat(),
                 "end_ts": requested_end.isoformat(),
@@ -650,7 +769,7 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                 "end_ts": requested_end.isoformat(),
             },
             "universe": {
-                "input_tickers": [str(x).upper() for x in input_tickers],
+                "input_tickers": input_tickers,
                 "selected_top5": selected_symbols,
                 "selection_source": universe_source,
                 "selection_rules": [

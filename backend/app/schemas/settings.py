@@ -4,6 +4,33 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, model_validator
 
+_DEFAULT_BREAKOUT_RETEST_2_TICKERS = [
+    "BTC",
+    "ETH",
+    "SOL",
+    "XRP",
+    "ADA",
+    "DYDX",
+    "INJ",
+    "ICP",
+    "GALA",
+    "AXS",
+    "TRB",
+    "ONDO",
+    "IOTA",
+    "NOT",
+    "FIL",
+    "NEO",
+    "ENJ",
+    "HYPE",
+    "STRK",
+    "SLP",
+    "ONE",
+    "MINA",
+    "RVN",
+    "RUNE",
+]
+
 
 DEFAULT_RISK = {
     "risk_per_trade_pct": 1.0,
@@ -29,7 +56,27 @@ DEFAULT_STRATEGY = {
     "breakout_lookback": 20,
     "breakout_retest_k_atr": 0.3,
     "pullback_rsi_threshold": 45.0,
+    "mr_bb_period": 20,
+    "mr_bb_std": 2.0,
+    "mr_rsi_period": 14,
+    "mr_rsi_entry_threshold": 30.0,
+    "mr_safety_ema_period": 200,
+    "mr_lookback_stop": 15,
+    "mr_stop_atr_buffer": 0.2,
+    "mr_max_stop_pct": 0.03,
+    "mr_tp_rr": 1.2,
     "trade_only_strategy": "both",
+    "strategy_presets": [
+        {
+            "name": "StrategyBreakoutRetest 2",
+            "base_strategy": "StrategyBreakoutRetest",
+            "backtest_params": {
+                "history_min_coverage_ratio": 0.01,
+                "history_target_coverage_ratio": 0.01,
+                "input_tickers": _DEFAULT_BREAKOUT_RETEST_2_TICKERS,
+            },
+        }
+    ],
 }
 
 DEFAULT_FEES = {

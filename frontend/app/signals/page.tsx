@@ -136,6 +136,7 @@ export default function SignalsPage() {
             <option value="">All</option>
             <option value="StrategyBreakoutRetest">BreakoutRetest</option>
             <option value="StrategyPullbackToTrend">PullbackToTrend</option>
+            <option value="MeanReversionHardStop">MeanReversionHardStop</option>
           </select>
         </div>
         <div>

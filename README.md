@@ -170,7 +170,29 @@ Execution model (default, conservative):
 - SL: ниже pullback low
 - TP: фиксированный R-multiple
 
+### MeanReversionHardStop
+- Работает только внутри 1H regime filter (`close > EMA200`, `slope >= 0`, `ATR% < threshold`)
+- Setup (5m): закрытие ниже нижней Bollinger Bands(20,2) **или** `RSI(14) < 30`
+- Safety guard: сигнал игнорируется, если 5m close ниже `EMA200_5m`
+- Trigger (5m): следующая закрытая свеча возвращается выше `BB_low` **или** RSI пересекает вверх уровень 30
+- Entry: цена trigger-close (исполнение в paper/backtest с консервативной моделью комиссии/slippage)
+- SL: `min(low за последние 15 свечей) - 0.2*ATR(14)` (fallback: `-0.1%`, если ATR недоступен)
+- Ограничение риска: если `(entry - stop)/entry > mr_max_stop_pct`, сигнал пропускается
+- TP: `entry + mr_tp_rr * (entry - stop)` (по умолчанию `1.2R`)
+- Без трейлинга, без partial, без DCA.
+
 No DCA / no martingale.
+
+Параметры `MeanReversionHardStop` в `strategy_params_json`:
+- `mr_bb_period` (default `20`)
+- `mr_bb_std` (default `2`)
+- `mr_rsi_period` (default `14`)
+- `mr_rsi_entry_threshold` (default `30`)
+- `mr_safety_ema_period` (default `200`)
+- `mr_lookback_stop` (default `15`)
+- `mr_stop_atr_buffer` (default `0.2`)
+- `mr_max_stop_pct` (default `0.03`)
+- `mr_tp_rr` (default `1.2`)
 
 ## Риск-менеджмент (default)
 - `risk_per_trade_pct = 1.0`

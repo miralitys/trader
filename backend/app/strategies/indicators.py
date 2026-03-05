@@ -56,3 +56,30 @@ def rsi(values: list[float], period: int = 14) -> list[float]:
         value = 100 - (100 / (1 + rs))
         out.append(50.0 if isnan(value) else value)
     return out
+
+
+def bollinger_bands(
+    values: list[float],
+    period: int = 20,
+    std: float = 2.0,
+) -> tuple[list[float], list[float], list[float]]:
+    if not values:
+        return [], [], []
+
+    lookback = max(1, period)
+    mid: list[float] = []
+    upper: list[float] = []
+    lower: list[float] = []
+
+    for idx in range(len(values)):
+        start = max(0, idx - lookback + 1)
+        window = values[start : idx + 1]
+        mean = sum(window) / len(window)
+        variance = sum((x - mean) ** 2 for x in window) / len(window)
+        sigma = variance**0.5
+
+        mid.append(mean)
+        upper.append(mean + std * sigma)
+        lower.append(mean - std * sigma)
+
+    return mid, upper, lower
