@@ -189,6 +189,7 @@ export default function BacktestsPage() {
   const [selected, setSelected] = useState<Backtest | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [running, setRunning] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [lastBacktestsRefreshAt, setLastBacktestsRefreshAt] = useState<number | null>(null)
   const [strategySelection, setStrategySelection] = useState(DEFAULT_STRATEGY_SELECTION)
@@ -202,9 +203,10 @@ export default function BacktestsPage() {
     return row.metrics_json as Record<string, number>
   }
 
-  async function loadBacktests() {
+  async function loadBacktests(opts?: { force?: boolean }) {
     try {
-      const data = await apiFetch<Backtest[]>('/api/backtests')
+      const path = opts?.force ? `/api/backtests?refresh_ts=${Date.now()}` : '/api/backtests'
+      const data = await apiFetch<Backtest[]>(path)
       const refreshedAt = Date.now()
       setLastBacktestsRefreshAt(refreshedAt)
       setNowMs(refreshedAt)
@@ -219,18 +221,28 @@ export default function BacktestsPage() {
     }
   }
 
-  async function loadStrategyPresets() {
+  async function loadStrategyPresets(opts?: { force?: boolean }) {
     try {
-      const settings = await apiFetch<SettingsForBacktests>('/api/settings')
+      const path = opts?.force ? `/api/settings?refresh_ts=${Date.now()}` : '/api/settings'
+      const settings = await apiFetch<SettingsForBacktests>(path)
       setStrategyPresets(parseStrategyPresets(settings.strategy_params_json?.strategy_presets))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load strategy presets')
     }
   }
 
-  async function loadAll() {
+  async function loadAll(opts?: { force?: boolean }) {
     setError(null)
-    await Promise.all([loadBacktests(), loadStrategyPresets()])
+    await Promise.all([loadBacktests(opts), loadStrategyPresets(opts)])
+  }
+
+  async function refreshNow() {
+    setRefreshing(true)
+    try {
+      await loadAll({ force: true })
+    } finally {
+      setRefreshing(false)
+    }
   }
 
   async function runBacktest() {
@@ -335,15 +347,24 @@ export default function BacktestsPage() {
           <button
             className="rounded-lg bg-accent text-white px-3 py-2 text-sm disabled:opacity-50"
             onClick={runBacktest}
-            disabled={running}
+            disabled={running || refreshing}
           >
             {running ? 'Running...' : 'Run'}
           </button>
-          <button className="rounded-lg border border-line bg-panel px-3 py-2 text-sm" onClick={loadAll}>
-            Refresh
+          <button
+            className="rounded-lg border border-line bg-panel px-3 py-2 text-sm disabled:opacity-50"
+            onClick={() => void refreshNow()}
+            disabled={refreshing}
+          >
+            {refreshing ? 'Refreshing...' : 'Refresh'}
           </button>
         </div>
       </div>
+      {lastBacktestsRefreshAt ? (
+        <div className="text-xs text-muted">
+          Updated: {new Date(lastBacktestsRefreshAt).toLocaleTimeString()}
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
         <div className="xl:col-span-2 card p-3 overflow-auto">
