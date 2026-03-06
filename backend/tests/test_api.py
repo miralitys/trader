@@ -259,6 +259,44 @@ def test_run_all_backtests_endpoint_creates_four_runs(client, auth_header, db_se
         assert str(db_row.params_json.get("celery_task_id", "")).startswith("task-")
 
 
+def test_run_all_backtests_endpoint_supports_subset_and_existing_batch_id(client, auth_header, db_session, monkeypatch):
+    def _fake_send_task(name, args):
+        return SimpleNamespace(id=f"task-{args[0]}")
+
+    monkeypatch.setattr(backtests_route.celery_app, "send_task", _fake_send_task)
+
+    existing_batch_id = "batch-fixed-001"
+    resp = client.post(
+        "/api/backtests/run-all",
+        headers=auth_header,
+        json={
+            "batch_id": existing_batch_id,
+            "strategies": ["MeanReversionHardStop", "StrategyTrendRetrace70"],
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["batch_id"] == existing_batch_id
+    assert payload["enqueue_errors"] == {}
+    assert payload["strategies"] == ["MeanReversionHardStop", "StrategyTrendRetrace70"]
+    assert len(payload["backtests"]) == 2
+    for row in payload["backtests"]:
+        db_row = db_session.get(Backtest, row["id"])
+        assert db_row is not None
+        assert db_row.params_json.get("batch_id") == existing_batch_id
+
+
+def test_run_all_backtests_endpoint_rejects_unknown_strategy(client, auth_header):
+    resp = client.post(
+        "/api/backtests/run-all",
+        headers=auth_header,
+        json={"strategies": ["UnknownStrategy"]},
+    )
+    assert resp.status_code == 400
+    assert "Unsupported strategy" in resp.json()["detail"]
+
+
 def test_backtest_batch_stats_endpoint_aggregates_metrics(client, auth_header, db_session):
     now = datetime.now(timezone.utc)
     batch_id = "batch-stats-001"

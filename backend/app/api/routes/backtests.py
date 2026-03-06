@@ -157,12 +157,30 @@ def run_backtests_for_all_strategies(
 
     common_params = payload.common_params if isinstance(payload.common_params, dict) else {}
     per_strategy_params = payload.per_strategy_params if isinstance(payload.per_strategy_params, dict) else {}
-    batch_id = uuid4().hex
+
+    requested_strategies = payload.strategies if isinstance(payload.strategies, list) else []
+    if requested_strategies:
+        strategies_to_run = []
+        seen: set[str] = set()
+        for item in requested_strategies:
+            strategy = str(item).strip()
+            if not strategy or strategy in seen:
+                continue
+            if strategy not in ALL_BACKTEST_STRATEGIES:
+                raise HTTPException(status_code=400, detail=f"Unsupported strategy: {strategy}")
+            seen.add(strategy)
+            strategies_to_run.append(strategy)
+        if not strategies_to_run:
+            raise HTTPException(status_code=400, detail="No valid strategies provided")
+    else:
+        strategies_to_run = list(ALL_BACKTEST_STRATEGIES)
+
+    batch_id = (payload.batch_id or "").strip() or uuid4().hex
 
     rows: list[Backtest] = []
     enqueue_errors: dict[str, str] = {}
 
-    for strategy in ALL_BACKTEST_STRATEGIES:
+    for strategy in strategies_to_run:
         strategy_overrides = per_strategy_params.get(strategy)
         overrides = strategy_overrides if isinstance(strategy_overrides, dict) else {}
         merged_params = {
@@ -195,7 +213,7 @@ def run_backtests_for_all_strategies(
         batch_id=batch_id,
         start_ts=start_ts,
         end_ts=end_ts,
-        strategies=ALL_BACKTEST_STRATEGIES,
+        strategies=strategies_to_run,
         backtests=[BacktestOut.model_validate(row) for row in rows],
         enqueue_errors=enqueue_errors,
     )

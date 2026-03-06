@@ -59,6 +59,8 @@ class BacktestOut(BaseModel):
 
 
 class BacktestBatchRunRequest(BaseModel):
+    batch_id: str | None = None
+    strategies: list[str] | None = None
     start_ts: datetime | None = None
     end_ts: datetime | None = None
     common_params: dict = Field(default_factory=dict)
