@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import io
 from datetime import datetime, timezone
+from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
@@ -13,6 +15,10 @@ from app.api.deps import get_current_user
 from app.db.session import get_db
 from app.models.entities import Backtest, User
 from app.schemas.backtest import (
+    BacktestBatchRunOut,
+    BacktestBatchRunRequest,
+    BacktestBatchStatsOut,
+    BacktestBatchStrategyStatsOut,
     BacktestHistoryReadinessOut,
     BacktestHistoryReadinessRequest,
     BacktestOut,
@@ -22,6 +28,84 @@ from app.services.backtest_service import inspect_backtest_history_readiness, ro
 from app.workers.celery_app import celery_app
 
 router = APIRouter(prefix="/backtests")
+DEFAULT_EXECUTION_MODEL = "CONSERVATIVE_TAKER_ONLY"
+ALL_BACKTEST_STRATEGIES = [
+    "StrategyBreakoutRetest",
+    "StrategyPullbackToTrend",
+    "MeanReversionHardStop",
+    "StrategyTrendRetrace70",
+]
+
+
+def _normalized_backtest_params(params: dict | None) -> dict:
+    payload = params.copy() if isinstance(params, dict) else {}
+    payload["execution_model"] = DEFAULT_EXECUTION_MODEL
+    return payload
+
+
+def _create_backtest_row(
+    db: Session,
+    *,
+    strategy: str,
+    start_ts: datetime,
+    end_ts: datetime,
+    params: dict,
+) -> Backtest:
+    row = Backtest(
+        strategy=strategy,
+        universe_json=[],
+        start_ts=start_ts,
+        end_ts=end_ts,
+        params_json=params,
+        metrics_json={},
+        equity_curve_json=[],
+        status="queued",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def _enqueue_backtest_task(db: Session, row: Backtest) -> None:
+    async_result = celery_app.send_task("app.workers.tasks.backtest_task", args=[row.id])
+    params = row.params_json.copy() if isinstance(row.params_json, dict) else {}
+    params["celery_task_id"] = async_result.id
+    params["enqueued_at"] = datetime.now(timezone.utc).isoformat()
+    row.params_json = params
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _extract_base_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
+    base = metrics.get("base")
+    if isinstance(base, dict):
+        return base
+    return {
+        key: metrics.get(key)
+        for key in (
+            "trades",
+            "winrate",
+            "profit_factor",
+            "expectancy",
+            "expectancy_r",
+            "max_drawdown_pct",
+            "avg_duration_min",
+            "gross_profit",
+            "gross_loss",
+        )
+        if key in metrics
+    }
 
 
 @router.post("/run", response_model=BacktestOut)
@@ -36,29 +120,16 @@ def run_backtest(
     if start_ts >= end_ts:
         raise HTTPException(status_code=400, detail="start_ts must be earlier than end_ts")
 
-    row = Backtest(
+    row = _create_backtest_row(
+        db,
         strategy=payload.strategy,
-        universe_json=[],
         start_ts=start_ts,
         end_ts=end_ts,
-        params_json={**payload.params, "execution_model": "CONSERVATIVE_TAKER_ONLY"},
-        metrics_json={},
-        equity_curve_json=[],
-        status="queued",
+        params=_normalized_backtest_params(payload.params),
     )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
 
     try:
-        async_result = celery_app.send_task("app.workers.tasks.backtest_task", args=[row.id])
-        params = row.params_json.copy()
-        params["celery_task_id"] = async_result.id
-        params["enqueued_at"] = datetime.now(timezone.utc).isoformat()
-        row.params_json = params
-        db.add(row)
-        db.commit()
-        db.refresh(row)
+        _enqueue_backtest_task(db, row)
     except Exception as exc:
         row.status = "failed"
         row.metrics_json = {"error": f"enqueue_failed: {exc}"}
@@ -70,6 +141,64 @@ def run_backtest(
             detail="Failed to enqueue backtest task. Verify Redis and worker availability.",
         ) from exc
     return BacktestOut.model_validate(row)
+
+
+@router.post("/run-all", response_model=BacktestBatchRunOut)
+def run_backtests_for_all_strategies(
+    payload: BacktestBatchRunRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> BacktestBatchRunOut:
+    default_start, default_end = rolling_24_month_window()
+    start_ts = payload.start_ts or default_start
+    end_ts = payload.end_ts or default_end
+    if start_ts >= end_ts:
+        raise HTTPException(status_code=400, detail="start_ts must be earlier than end_ts")
+
+    common_params = payload.common_params if isinstance(payload.common_params, dict) else {}
+    per_strategy_params = payload.per_strategy_params if isinstance(payload.per_strategy_params, dict) else {}
+    batch_id = uuid4().hex
+
+    rows: list[Backtest] = []
+    enqueue_errors: dict[str, str] = {}
+
+    for strategy in ALL_BACKTEST_STRATEGIES:
+        strategy_overrides = per_strategy_params.get(strategy)
+        overrides = strategy_overrides if isinstance(strategy_overrides, dict) else {}
+        merged_params = {
+            **common_params,
+            **overrides,
+            "batch_id": batch_id,
+            "batch_requested_start_ts": start_ts.isoformat(),
+            "batch_requested_end_ts": end_ts.isoformat(),
+            "batch_strategy": strategy,
+        }
+        row = _create_backtest_row(
+            db,
+            strategy=strategy,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            params=_normalized_backtest_params(merged_params),
+        )
+        rows.append(row)
+        try:
+            _enqueue_backtest_task(db, row)
+        except Exception as exc:
+            row.status = "failed"
+            row.metrics_json = {"error": f"enqueue_failed: {exc}"}
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+            enqueue_errors[strategy] = str(exc)
+
+    return BacktestBatchRunOut(
+        batch_id=batch_id,
+        start_ts=start_ts,
+        end_ts=end_ts,
+        strategies=ALL_BACKTEST_STRATEGIES,
+        backtests=[BacktestOut.model_validate(row) for row in rows],
+        enqueue_errors=enqueue_errors,
+    )
 
 
 @router.post("/{backtest_id}/cancel", response_model=BacktestOut)
@@ -133,6 +262,92 @@ def backtest_history_readiness(
         params=payload.params,
     )
     return BacktestHistoryReadinessOut.model_validate(readiness)
+
+
+@router.get("/batches/{batch_id}/stats", response_model=BacktestBatchStatsOut)
+def get_backtest_batch_stats(
+    batch_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> BacktestBatchStatsOut:
+    all_rows = db.scalars(select(Backtest).order_by(Backtest.created_at.desc()).limit(2000)).all()
+    batch_rows = [
+        row
+        for row in all_rows
+        if isinstance(row.params_json, dict) and str(row.params_json.get("batch_id", "")).strip() == batch_id
+    ]
+    if not batch_rows:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    latest_by_strategy: dict[str, Backtest] = {}
+    for row in batch_rows:
+        if row.strategy not in ALL_BACKTEST_STRATEGIES:
+            continue
+        if row.strategy not in latest_by_strategy:
+            latest_by_strategy[row.strategy] = row
+
+    requested_start: datetime | None = None
+    requested_end: datetime | None = None
+    for row in batch_rows:
+        params = row.params_json if isinstance(row.params_json, dict) else {}
+        requested_start = _parse_iso_datetime(params.get("batch_requested_start_ts"))
+        requested_end = _parse_iso_datetime(params.get("batch_requested_end_ts"))
+        if requested_start and requested_end:
+            break
+
+    strategy_items: list[BacktestBatchStrategyStatsOut] = []
+    counts: dict[str, int] = {
+        "missing": 0,
+        "queued": 0,
+        "running": 0,
+        "completed": 0,
+        "failed": 0,
+        "cancelled": 0,
+        "other": 0,
+    }
+
+    for strategy in ALL_BACKTEST_STRATEGIES:
+        row = latest_by_strategy.get(strategy)
+        if not row:
+            counts["missing"] += 1
+            strategy_items.append(BacktestBatchStrategyStatsOut(strategy=strategy, status="missing"))
+            continue
+
+        metrics = row.metrics_json if isinstance(row.metrics_json, dict) else {}
+        status = str(row.status or "unknown")
+        if status in counts:
+            counts[status] += 1
+        else:
+            counts["other"] += 1
+
+        strategy_items.append(
+            BacktestBatchStrategyStatsOut(
+                strategy=strategy,
+                status=status,
+                backtest_id=row.id,
+                created_at=row.created_at,
+                start_ts=row.start_ts,
+                end_ts=row.end_ts,
+                base=_extract_base_metrics(metrics),
+                stress_1_5x=metrics.get("stress_1_5x") if isinstance(metrics.get("stress_1_5x"), dict) else {},
+                stress_2_0x=metrics.get("stress_2_0x") if isinstance(metrics.get("stress_2_0x"), dict) else {},
+                error=str(metrics.get("error")) if metrics.get("error") is not None else None,
+            )
+        )
+
+    summary = {
+        "total_strategies": len(ALL_BACKTEST_STRATEGIES),
+        **counts,
+        "all_completed": counts["completed"] == len(ALL_BACKTEST_STRATEGIES),
+    }
+
+    return BacktestBatchStatsOut(
+        batch_id=batch_id,
+        start_ts=requested_start,
+        end_ts=requested_end,
+        summary=summary,
+        strategies=strategy_items,
+    )
 
 
 @router.get("", response_model=list[BacktestOut])

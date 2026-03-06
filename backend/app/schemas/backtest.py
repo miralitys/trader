@@ -56,3 +56,46 @@ class BacktestOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class BacktestBatchRunRequest(BaseModel):
+    start_ts: datetime | None = None
+    end_ts: datetime | None = None
+    common_params: dict = Field(default_factory=dict)
+    per_strategy_params: dict[str, dict] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_period(self) -> "BacktestBatchRunRequest":
+        if self.start_ts and self.end_ts and self.start_ts >= self.end_ts:
+            raise ValueError("start_ts must be earlier than end_ts")
+        return self
+
+
+class BacktestBatchRunOut(BaseModel):
+    batch_id: str
+    start_ts: datetime
+    end_ts: datetime
+    strategies: list[str]
+    backtests: list[BacktestOut]
+    enqueue_errors: dict[str, str] = Field(default_factory=dict)
+
+
+class BacktestBatchStrategyStatsOut(BaseModel):
+    strategy: str
+    status: str
+    backtest_id: int | None = None
+    created_at: datetime | None = None
+    start_ts: datetime | None = None
+    end_ts: datetime | None = None
+    base: dict = Field(default_factory=dict)
+    stress_1_5x: dict = Field(default_factory=dict)
+    stress_2_0x: dict = Field(default_factory=dict)
+    error: str | None = None
+
+
+class BacktestBatchStatsOut(BaseModel):
+    batch_id: str
+    start_ts: datetime | None = None
+    end_ts: datetime | None = None
+    summary: dict
+    strategies: list[BacktestBatchStrategyStatsOut]

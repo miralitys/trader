@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 from app.api.routes import backtests as backtests_route
 from app.models.entities import Backtest, Candle, Instrument
@@ -222,3 +223,122 @@ def test_cancel_backtest_endpoint_marks_cancelled_and_revokes_task(client, auth_
     assert called["task_id"] == "task-123"
     assert called["terminate"] == "True"
     assert called["signal"] == "SIGTERM"
+
+
+def test_run_all_backtests_endpoint_creates_four_runs(client, auth_header, db_session, monkeypatch):
+    def _fake_send_task(name, args):
+        return SimpleNamespace(id=f"task-{args[0]}")
+
+    monkeypatch.setattr(backtests_route.celery_app, "send_task", _fake_send_task)
+
+    end_ts = datetime.now(timezone.utc)
+    start_ts = end_ts - timedelta(days=730)
+
+    resp = client.post(
+        "/api/backtests/run-all",
+        headers=auth_header,
+        json={
+            "start_ts": start_ts.isoformat(),
+            "end_ts": end_ts.isoformat(),
+        },
+    )
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["batch_id"]
+    assert payload["enqueue_errors"] == {}
+    assert len(payload["backtests"]) == 4
+    assert set(payload["strategies"]) == set(backtests_route.ALL_BACKTEST_STRATEGIES)
+
+    for row in payload["backtests"]:
+        assert row["status"] == "queued"
+        db_row = db_session.get(Backtest, row["id"])
+        assert db_row is not None
+        assert db_row.strategy in backtests_route.ALL_BACKTEST_STRATEGIES
+        assert db_row.params_json.get("batch_id") == payload["batch_id"]
+        assert str(db_row.params_json.get("celery_task_id", "")).startswith("task-")
+
+
+def test_backtest_batch_stats_endpoint_aggregates_metrics(client, auth_header, db_session):
+    now = datetime.now(timezone.utc)
+    batch_id = "batch-stats-001"
+    requested_start = now - timedelta(days=730)
+    requested_end = now
+
+    rows = [
+        Backtest(
+            strategy="StrategyBreakoutRetest",
+            universe_json=["BTC-USDC"],
+            start_ts=requested_start,
+            end_ts=requested_end,
+            params_json={
+                "batch_id": batch_id,
+                "batch_requested_start_ts": requested_start.isoformat(),
+                "batch_requested_end_ts": requested_end.isoformat(),
+            },
+            metrics_json={
+                "base": {"trades": 11, "winrate": 0.55, "profit_factor": 1.3},
+                "stress_1_5x": {"profit_factor": 1.1},
+                "stress_2_0x": {"profit_factor": 0.9},
+            },
+            equity_curve_json=[],
+            status="completed",
+            created_at=now - timedelta(minutes=3),
+        ),
+        Backtest(
+            strategy="StrategyPullbackToTrend",
+            universe_json=["ETH-USDC"],
+            start_ts=requested_start,
+            end_ts=requested_end,
+            params_json={
+                "batch_id": batch_id,
+                "batch_requested_start_ts": requested_start.isoformat(),
+                "batch_requested_end_ts": requested_end.isoformat(),
+            },
+            metrics_json={
+                "base": {"trades": 7, "winrate": 0.42, "profit_factor": 0.9},
+                "error": "insufficient_signals",
+            },
+            equity_curve_json=[],
+            status="failed",
+            created_at=now - timedelta(minutes=2),
+        ),
+        Backtest(
+            strategy="MeanReversionHardStop",
+            universe_json=["SOL-USDC"],
+            start_ts=requested_start,
+            end_ts=requested_end,
+            params_json={
+                "batch_id": batch_id,
+                "batch_requested_start_ts": requested_start.isoformat(),
+                "batch_requested_end_ts": requested_end.isoformat(),
+            },
+            metrics_json={},
+            equity_curve_json=[],
+            status="running",
+            created_at=now - timedelta(minutes=1),
+        ),
+    ]
+    db_session.add_all(rows)
+    db_session.commit()
+
+    resp = client.get(f"/api/backtests/batches/{batch_id}/stats", headers=auth_header)
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["batch_id"] == batch_id
+    assert payload["summary"]["total_strategies"] == 4
+    assert payload["summary"]["completed"] == 1
+    assert payload["summary"]["failed"] == 1
+    assert payload["summary"]["running"] == 1
+    assert payload["summary"]["missing"] == 1
+    assert payload["summary"]["all_completed"] is False
+    assert len(payload["strategies"]) == 4
+
+    by_strategy = {item["strategy"]: item for item in payload["strategies"]}
+    assert by_strategy["StrategyBreakoutRetest"]["status"] == "completed"
+    assert by_strategy["StrategyBreakoutRetest"]["base"]["trades"] == 11
+    assert by_strategy["StrategyPullbackToTrend"]["status"] == "failed"
+    assert by_strategy["StrategyPullbackToTrend"]["error"] == "insufficient_signals"
+    assert by_strategy["MeanReversionHardStop"]["status"] == "running"
+    assert by_strategy["StrategyTrendRetrace70"]["status"] == "missing"
