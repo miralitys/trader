@@ -27,6 +27,7 @@ DEFAULT_BACKTEST_TAKER_FEE_PCT = 0.60
 DEFAULT_HISTORY_TARGET_COVERAGE_RATIO = 0.20
 DEFAULT_HISTORY_MIN_COVERAGE_RATIO = 0.03
 DEFAULT_HISTORY_REQUIRED_COVERAGE_RATIO = 0.20
+LONG_WINDOW_AUTO_COVERAGE_DAYS = 365
 BACKTEST_STALE_TIMEOUT_MINUTES = 60
 STRATEGY_BREAKOUT_RETEST_2 = "StrategyBreakoutRetest 2"
 BREAKOUT_RETEST_2_MIN_COVERAGE_RATIO = 0.005
@@ -487,9 +488,16 @@ def _build_backtest_plan(
         ),
     )
 
+    requested_days = max(1.0, (requested_end - requested_start).total_seconds() / 86400.0)
+    auto_enforced_floor = requested_days >= LONG_WINDOW_AUTO_COVERAGE_DAYS
+
     target_coverage_ratio = min(max(target_coverage_ratio, 0.0), 1.0)
     min_coverage_ratio = min(max(min_coverage_ratio, 0.0), 1.0)
     required_coverage_ratio = min(max(required_coverage_ratio, 0.0), 1.0)
+
+    if auto_enforced_floor:
+        min_coverage_ratio = max(min_coverage_ratio, required_coverage_ratio)
+
     if min_coverage_ratio > target_coverage_ratio:
         target_coverage_ratio = min_coverage_ratio
     if required_coverage_ratio < min_coverage_ratio:
@@ -540,6 +548,8 @@ def _build_backtest_plan(
     params["history_min_coverage_ratio"] = min_coverage_ratio
     params["history_required_coverage_ratio"] = required_coverage_ratio
     params["history_effective_coverage_ratio"] = round(effective_coverage_ratio, 6)
+    params["history_auto_enforced_floor"] = auto_enforced_floor
+    params["history_requested_days"] = round(requested_days, 2)
     params["input_tickers"] = input_tickers
     params["strategy_requested"] = requested_strategy
     params["strategy_runtime"] = runtime_strategy
@@ -557,6 +567,8 @@ def _build_backtest_plan(
         "min_coverage_ratio": min_coverage_ratio,
         "required_coverage_ratio": required_coverage_ratio,
         "effective_coverage_ratio": effective_coverage_ratio,
+        "requested_days": requested_days,
+        "auto_enforced_floor": auto_enforced_floor,
         "input_tickers": input_tickers,
         "candidates": candidates,
         "universe_source": universe_source,
@@ -601,6 +613,8 @@ def inspect_backtest_history_readiness(
             "required_ratio": plan["required_coverage_ratio"],
             "min_ratio": plan["min_coverage_ratio"],
             "target_ratio": plan["target_coverage_ratio"],
+            "requested_days": round(plan["requested_days"], 2),
+            "auto_enforced_floor": bool(plan["auto_enforced_floor"]),
         },
         "universe": {
             "input_tickers": plan["input_tickers"],
@@ -1281,6 +1295,18 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             if name == "base":
                 base_curve = curve
 
+        selection_rules = [
+            "products: online + USDC quote",
+            "intersect with input tickers",
+            "rank by liquidity",
+            f"exclude coverage below {_format_ratio(min_coverage_ratio)}",
+            f"replace below target coverage {_format_ratio(target_coverage_ratio)}",
+        ]
+        if plan["auto_enforced_floor"]:
+            selection_rules.append(
+                f"auto_raise_min_coverage_for_long_window({_format_ratio(required_coverage_ratio)})"
+            )
+
         assumptions = {
             "execution_model": "CONSERVATIVE_TAKER_ONLY",
             "taker_only": True,
@@ -1299,17 +1325,12 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                 "input_tickers": input_tickers,
                 "selected_top5": selected_symbols,
                 "selection_source": universe_source,
-                "selection_rules": [
-                    "products: online + USDC quote",
-                    "intersect with input tickers",
-                    "rank by liquidity",
-                    f"exclude coverage below {_format_ratio(min_coverage_ratio)}",
-                    f"replace below target coverage {_format_ratio(target_coverage_ratio)}",
-                ],
+                "selection_rules": selection_rules,
                 "min_coverage_ratio": min_coverage_ratio,
                 "target_coverage_ratio": target_coverage_ratio,
                 "required_coverage_ratio": required_coverage_ratio,
                 "effective_coverage_ratio": round(effective_coverage_ratio, 6),
+                "auto_enforced_floor": bool(plan["auto_enforced_floor"]),
             },
             "fees": {
                 "taker_fee_pct": taker_fee_pct,

@@ -1,7 +1,13 @@
 from datetime import datetime, timedelta, timezone
 
-from app.models.entities import Backtest
-from app.services.backtest_service import UniverseCandidate, _select_top5_with_history, fail_stale_backtests
+from app.models.entities import Backtest, Candle, Instrument
+from app.services import backtest_service
+from app.services.backtest_service import (
+    UniverseCandidate,
+    _select_top5_with_history,
+    fail_stale_backtests,
+    inspect_backtest_history_readiness,
+)
 
 
 def test_universe_selection_excludes_near_zero_coverage_and_replaces_below_target():
@@ -108,3 +114,127 @@ def test_fail_stale_backtests_marks_only_old_running(db_session):
     assert "stale_timeout" in stale_running.metrics_json["error"]
     assert fresh_running.status == "running"
     assert queued_old.status == "queued"
+
+
+def test_history_readiness_auto_excludes_late_symbols_for_long_window(db_session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    start_ts = now - timedelta(days=730)
+
+    symbols = ["NEW", "OLD1", "OLD2", "OLD3", "OLD4", "OLD5"]
+    for sym in symbols:
+        instrument = Instrument(
+            symbol=f"{sym}-USDC",
+            base=sym,
+            quote="USDC",
+            product_id=f"{sym}-USDC",
+            status="online",
+            min_size=0.0001,
+            size_increment=0.0001,
+            price_increment=0.0001,
+        )
+        db_session.add(instrument)
+        db_session.flush()
+
+        coverage_days = 7 if sym == "NEW" else 220
+        first_ts = now - timedelta(days=coverage_days)
+        db_session.add(
+            Candle(
+                instrument_id=instrument.id,
+                timeframe="5m",
+                ts=first_ts,
+                open=1.0,
+                high=1.1,
+                low=0.9,
+                close=1.0,
+                volume=100.0,
+                source="test",
+            )
+        )
+        db_session.add(
+            Candle(
+                instrument_id=instrument.id,
+                timeframe="5m",
+                ts=now,
+                open=1.0,
+                high=1.1,
+                low=0.9,
+                close=1.0,
+                volume=100.0,
+                source="test",
+            )
+        )
+    db_session.commit()
+
+    monkeypatch.setattr(
+        backtest_service.coinbase_client,
+        "get_products",
+        lambda: [
+            {
+                "product_id": "NEW-USDC",
+                "base_currency_id": "NEW",
+                "quote_currency_id": "USDC",
+                "status": "online",
+                "trading_disabled": False,
+                "quote_volume_24h": "9000000",
+            },
+            {
+                "product_id": "OLD1-USDC",
+                "base_currency_id": "OLD1",
+                "quote_currency_id": "USDC",
+                "status": "online",
+                "trading_disabled": False,
+                "quote_volume_24h": "8000000",
+            },
+            {
+                "product_id": "OLD2-USDC",
+                "base_currency_id": "OLD2",
+                "quote_currency_id": "USDC",
+                "status": "online",
+                "trading_disabled": False,
+                "quote_volume_24h": "7000000",
+            },
+            {
+                "product_id": "OLD3-USDC",
+                "base_currency_id": "OLD3",
+                "quote_currency_id": "USDC",
+                "status": "online",
+                "trading_disabled": False,
+                "quote_volume_24h": "6000000",
+            },
+            {
+                "product_id": "OLD4-USDC",
+                "base_currency_id": "OLD4",
+                "quote_currency_id": "USDC",
+                "status": "online",
+                "trading_disabled": False,
+                "quote_volume_24h": "5000000",
+            },
+            {
+                "product_id": "OLD5-USDC",
+                "base_currency_id": "OLD5",
+                "quote_currency_id": "USDC",
+                "status": "online",
+                "trading_disabled": False,
+                "quote_volume_24h": "4000000",
+            },
+        ],
+    )
+
+    readiness = inspect_backtest_history_readiness(
+        db_session,
+        strategy="StrategyTrendRetrace70",
+        start_ts=start_ts,
+        end_ts=now,
+        params={
+            "input_tickers": symbols,
+            "history_min_coverage_ratio": 0.005,
+            "history_target_coverage_ratio": 0.005,
+            "history_required_coverage_ratio": 0.20,
+        },
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["coverage"]["auto_enforced_floor"] is True
+    assert readiness["coverage"]["min_ratio"] >= 0.20
+    assert "NEW-USDC" not in readiness["universe"]["selected_top5"]
+    assert len(readiness["universe"]["selected_top5"]) == 5
