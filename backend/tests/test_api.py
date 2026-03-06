@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
-from app.models.entities import Candle, Instrument
+from app.api.routes import backtests as backtests_route
+from app.models.entities import Backtest, Candle, Instrument
 from app.services import backtest_service
 
 
@@ -181,3 +182,43 @@ def test_backtest_history_readiness_endpoint_returns_not_ready_for_sparse_data(
     assert payload["ready"] is False
     assert payload["reason"] in {"insufficient_common_history", "no_symbols_with_min_coverage"}
     assert payload["coverage"]["required_ratio"] >= 0.2
+
+
+def test_cancel_backtest_endpoint_marks_cancelled_and_revokes_task(client, auth_header, db_session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    row = Backtest(
+        strategy="StrategyTrendRetrace70",
+        universe_json=[],
+        start_ts=now - timedelta(days=30),
+        end_ts=now,
+        params_json={"celery_task_id": "task-123"},
+        metrics_json={},
+        equity_curve_json=[],
+        status="running",
+        created_at=now,
+    )
+    db_session.add(row)
+    db_session.commit()
+    db_session.refresh(row)
+
+    called: dict[str, str] = {}
+
+    def _fake_revoke(task_id, terminate=False, signal=None):
+        called["task_id"] = task_id
+        called["terminate"] = str(terminate)
+        called["signal"] = str(signal)
+
+    monkeypatch.setattr(backtests_route.celery_app.control, "revoke", _fake_revoke)
+
+    resp = client.post(f"/api/backtests/{row.id}/cancel", headers=auth_header)
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["status"] == "cancelled"
+
+    db_session.refresh(row)
+    assert row.status == "cancelled"
+    assert row.metrics_json.get("cancel_requested") is True
+    assert row.metrics_json.get("error") == "cancelled_by_user"
+    assert called["task_id"] == "task-123"
+    assert called["terminate"] == "True"
+    assert called["signal"] == "SIGTERM"

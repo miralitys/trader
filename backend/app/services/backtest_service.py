@@ -1085,15 +1085,57 @@ def _build_metrics(trades: list[SimTrade], initial_equity: float) -> tuple[dict,
     return metrics, curve
 
 
+def _cancelled_metrics(reason: str) -> dict[str, Any]:
+    return {
+        "error": reason,
+        "cancelled": True,
+        "base": {
+            "trades": 0,
+            "winrate": 0.0,
+            "profit_factor": 0.0,
+            "expectancy": 0.0,
+            "expectancy_r": 0.0,
+            "max_drawdown_pct": 0.0,
+            "avg_duration_min": 0.0,
+        },
+    }
+
+
+def _is_cancelled_by_user(db: Session, backtest: Backtest) -> bool:
+    db.refresh(backtest)
+    return backtest.status == "cancelled"
+
+
+def _finalize_as_cancelled(db: Session, backtest: Backtest, reason: str) -> Backtest:
+    metrics = backtest.metrics_json.copy() if isinstance(backtest.metrics_json, dict) else {}
+    if "base" not in metrics:
+        metrics.update(_cancelled_metrics(reason))
+    else:
+        metrics["error"] = reason
+        metrics["cancelled"] = True
+    backtest.status = "cancelled"
+    backtest.metrics_json = metrics
+    backtest.equity_curve_json = []
+    db.commit()
+    db.refresh(backtest)
+    return backtest
+
+
 def run_backtest(db: Session, backtest_id: int) -> Backtest:
     backtest = db.scalar(select(Backtest).where(Backtest.id == backtest_id))
     if not backtest:
         raise RuntimeError("Backtest not found")
 
+    if backtest.status == "cancelled":
+        return _finalize_as_cancelled(db, backtest, "cancelled_by_user_before_start")
+
     backtest.status = "running"
     db.commit()
 
     try:
+        if _is_cancelled_by_user(db, backtest):
+            return _finalize_as_cancelled(db, backtest, "cancelled_by_user")
+
         setting = db.scalar(select(Setting).order_by(Setting.id.asc()).limit(1))
         requested_start = backtest.start_ts
         requested_end = backtest.end_ts
@@ -1126,6 +1168,9 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
         backtest.start_ts = effective_start
         backtest.params_json = params
         db.commit()
+
+        if _is_cancelled_by_user(db, backtest):
+            return _finalize_as_cancelled(db, backtest, "cancelled_by_user")
 
         if not plan["ready"]:
             backtest.status = "failed"
@@ -1170,6 +1215,9 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             if key in params:
                 strategy_params[key] = params[key]
         optimization_meta: dict[str, Any] | None = None
+
+        if _is_cancelled_by_user(db, backtest):
+            return _finalize_as_cancelled(db, backtest, "cancelled_by_user")
 
         candles_5m_by_symbol: dict[str, list[CandleData]] = {}
         candles_1h_by_symbol: dict[str, list[CandleData]] = {}
@@ -1294,6 +1342,9 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             scenario_metrics[name] = metrics
             if name == "base":
                 base_curve = curve
+
+        if _is_cancelled_by_user(db, backtest):
+            return _finalize_as_cancelled(db, backtest, "cancelled_by_user")
 
         selection_rules = [
             "products: online + USDC quote",

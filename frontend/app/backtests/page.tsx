@@ -230,6 +230,7 @@ export default function BacktestsPage() {
   const [endTs, setEndTs] = useState(defaultEnd.toISOString())
   const [readiness, setReadiness] = useState<BacktestHistoryReadiness | null>(null)
   const [readinessLoading, setReadinessLoading] = useState(false)
+  const [stoppingBacktestId, setStoppingBacktestId] = useState<number | null>(null)
 
   function baseMetrics(row: Backtest): Record<string, number> {
     const nested = row.metrics_json?.base as Record<string, number> | undefined
@@ -323,6 +324,19 @@ export default function BacktestsPage() {
     }
   }
 
+  async function stopBacktest(backtestId: number) {
+    setStoppingBacktestId(backtestId)
+    setError(null)
+    try {
+      await apiFetch(`/api/backtests/${backtestId}/cancel`, { method: 'POST' })
+      await loadBacktests({ force: true })
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to stop backtest')
+    } finally {
+      setStoppingBacktestId(null)
+    }
+  }
+
   useEffect(() => {
     loadAll()
   }, [])
@@ -333,7 +347,9 @@ export default function BacktestsPage() {
   }, [])
 
   useEffect(() => {
-    const hasActiveRuns = rows.some((item) => item.status === 'running' || item.status === 'queued')
+    const hasActiveRuns = rows.some(
+      (item) => item.status === 'running' || item.status === 'queued' || item.status === 'cancelling'
+    )
     if (!hasActiveRuns) return
     const interval = window.setInterval(() => {
       void loadBacktests()
@@ -495,8 +511,10 @@ export default function BacktestsPage() {
                 const minutesSinceLastRefresh = lastBacktestsRefreshAt
                   ? minutesSince(new Date(lastBacktestsRefreshAt).toISOString(), nowMs)
                   : null
-                const showLiveHint = selected.status === 'running' || selected.status === 'queued'
+                const showLiveHint =
+                  selected.status === 'running' || selected.status === 'queued' || selected.status === 'cancelling'
                 const isStaleRisk = selected.status === 'running' && inStatusMinutes >= BACKTEST_STALE_TIMEOUT_MINUTES
+                const stoppable = selected.status === 'running' || selected.status === 'queued'
                 return (
                   <div className="text-sm">
                     <div><span className="text-muted">ID:</span> {selected.id}</div>
@@ -525,6 +543,17 @@ export default function BacktestsPage() {
                               : `Running: auto-timeout guard in ~${minutesUntilStale}m.`}
                         </div>
                       </>
+                    ) : null}
+                    {stoppable ? (
+                      <div className="mt-2">
+                        <button
+                          className="rounded-lg border border-line bg-panel px-3 py-1 text-sm disabled:opacity-50"
+                          onClick={() => void stopBacktest(selected.id)}
+                          disabled={stoppingBacktestId === selected.id}
+                        >
+                          {stoppingBacktestId === selected.id ? 'Stopping...' : 'Stop'}
+                        </button>
+                      </div>
                     ) : null}
                   </div>
                 )

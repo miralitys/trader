@@ -7,6 +7,7 @@ from app.services.backtest_service import (
     _select_top5_with_history,
     fail_stale_backtests,
     inspect_backtest_history_readiness,
+    run_backtest,
 )
 
 
@@ -238,3 +239,26 @@ def test_history_readiness_auto_excludes_late_symbols_for_long_window(db_session
     assert readiness["coverage"]["min_ratio"] >= 0.20
     assert "NEW-USDC" not in readiness["universe"]["selected_top5"]
     assert len(readiness["universe"]["selected_top5"]) == 5
+
+
+def test_run_backtest_returns_cancelled_without_processing(db_session):
+    now = datetime.now(timezone.utc)
+    row = Backtest(
+        strategy="StrategyTrendRetrace70",
+        universe_json=[],
+        start_ts=now - timedelta(days=30),
+        end_ts=now,
+        params_json={},
+        metrics_json={},
+        equity_curve_json=[],
+        status="cancelled",
+        created_at=now,
+    )
+    db_session.add(row)
+    db_session.commit()
+    db_session.refresh(row)
+
+    result = run_backtest(db_session, row.id)
+
+    assert result.status == "cancelled"
+    assert result.metrics_json.get("cancelled") is True

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
@@ -50,7 +51,14 @@ def run_backtest(
     db.refresh(row)
 
     try:
-        celery_app.send_task("app.workers.tasks.backtest_task", args=[row.id])
+        async_result = celery_app.send_task("app.workers.tasks.backtest_task", args=[row.id])
+        params = row.params_json.copy()
+        params["celery_task_id"] = async_result.id
+        params["enqueued_at"] = datetime.now(timezone.utc).isoformat()
+        row.params_json = params
+        db.add(row)
+        db.commit()
+        db.refresh(row)
     except Exception as exc:
         row.status = "failed"
         row.metrics_json = {"error": f"enqueue_failed: {exc}"}
@@ -61,6 +69,47 @@ def run_backtest(
             status_code=503,
             detail="Failed to enqueue backtest task. Verify Redis and worker availability.",
         ) from exc
+    return BacktestOut.model_validate(row)
+
+
+@router.post("/{backtest_id}/cancel", response_model=BacktestOut)
+def cancel_backtest(
+    backtest_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> BacktestOut:
+    row = db.scalar(select(Backtest).where(Backtest.id == backtest_id))
+    if not row:
+        raise HTTPException(status_code=404, detail="Backtest not found")
+
+    if row.status in {"completed", "failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail=f"Backtest already {row.status}")
+
+    params = row.params_json.copy() if isinstance(row.params_json, dict) else {}
+    task_id = str(params.get("celery_task_id") or "").strip()
+    params["cancel_requested_at"] = datetime.now(timezone.utc).isoformat()
+    row.params_json = params
+
+    metrics = row.metrics_json.copy() if isinstance(row.metrics_json, dict) else {}
+    metrics["cancel_requested"] = True
+    metrics["error"] = "cancelled_by_user"
+    row.metrics_json = metrics
+    row.status = "cancelled"
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    if task_id:
+        try:
+            celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+        except Exception as exc:
+            metrics = row.metrics_json.copy() if isinstance(row.metrics_json, dict) else {}
+            metrics["cancel_revoke_error"] = str(exc)
+            row.metrics_json = metrics
+            db.add(row)
+            db.commit()
+            db.refresh(row)
+
     return BacktestOut.model_validate(row)
 
 
