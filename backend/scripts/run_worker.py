@@ -14,14 +14,20 @@ from app.workers.celery_app import celery_app
 
 def main() -> None:
     concurrency = os.getenv("CELERY_CONCURRENCY", "2")
-    celery_app.worker_main(
-        [
-            "worker",
-            "--beat",
-            "--loglevel=info",
-            f"--concurrency={concurrency}",
-        ]
-    )
+    queues = os.getenv("CELERY_QUEUES", "").strip()
+    with_beat = os.getenv("CELERY_WITH_BEAT", "1").strip().lower() not in {"0", "false", "no", "off"}
+
+    args = [
+        "worker",
+        "--loglevel=info",
+        f"--concurrency={concurrency}",
+    ]
+    if queues:
+        args.append(f"--queues={queues}")
+    if with_beat:
+        args.append("--beat")
+
+    celery_app.worker_main(args)
 
 
 if __name__ == "__main__":

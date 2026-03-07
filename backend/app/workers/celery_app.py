@@ -18,6 +18,10 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     imports=("app.workers.tasks",),
+    task_default_queue="default",
+    task_routes={
+        "app.workers.tasks.backtest_task": {"queue": "backtests"},
+    },
 )
 
 celery_app.conf.beat_schedule = {

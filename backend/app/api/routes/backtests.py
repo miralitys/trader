@@ -68,7 +68,7 @@ def _create_backtest_row(
 
 
 def _enqueue_backtest_task(db: Session, row: Backtest) -> None:
-    async_result = celery_app.send_task("app.workers.tasks.backtest_task", args=[row.id])
+    async_result = celery_app.send_task("app.workers.tasks.backtest_task", args=[row.id], queue="backtests")
     params = row.params_json.copy() if isinstance(row.params_json, dict) else {}
     params["celery_task_id"] = async_result.id
     params["enqueued_at"] = datetime.now(timezone.utc).isoformat()

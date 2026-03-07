@@ -55,13 +55,16 @@ services:
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg2://trader:trader@postgres:5432/trader}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_QUEUES: ${CELERY_QUEUES:-default,backtests}
+      CELERY_WITH_BEAT: ${CELERY_WITH_BEAT:-1}
+      CELERY_CONCURRENCY: ${CELERY_CONCURRENCY:-2}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     command: >
-      sh -c "alembic upgrade head && celery -A app.workers.celery_app:celery_app worker --beat --loglevel=info --concurrency=2"
+      sh -c "alembic upgrade head && python scripts/run_worker.py"
 
   frontend:
     build:

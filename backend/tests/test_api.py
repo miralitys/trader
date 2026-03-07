@@ -226,7 +226,8 @@ def test_cancel_backtest_endpoint_marks_cancelled_and_revokes_task(client, auth_
 
 
 def test_run_all_backtests_endpoint_creates_four_runs(client, auth_header, db_session, monkeypatch):
-    def _fake_send_task(name, args):
+    def _fake_send_task(name, args, queue=None):
+        assert queue == "backtests"
         return SimpleNamespace(id=f"task-{args[0]}")
 
     monkeypatch.setattr(backtests_route.celery_app, "send_task", _fake_send_task)
@@ -260,7 +261,8 @@ def test_run_all_backtests_endpoint_creates_four_runs(client, auth_header, db_se
 
 
 def test_run_all_backtests_endpoint_supports_subset_and_existing_batch_id(client, auth_header, db_session, monkeypatch):
-    def _fake_send_task(name, args):
+    def _fake_send_task(name, args, queue=None):
+        assert queue == "backtests"
         return SimpleNamespace(id=f"task-{args[0]}")
 
     monkeypatch.setattr(backtests_route.celery_app, "send_task", _fake_send_task)
