@@ -44,15 +44,15 @@ services:
       - key: LOG_LEVEL
         value: "INFO"
       - key: BACKFILL_5M_DAYS
-        value: "180"
+        value: "730"
       - key: BACKFILL_15M_DAYS
         value: "365"
       - key: BACKFILL_1H_DAYS
         value: "730"
       - key: BACKFILL_MAX_SYMBOLS_PER_RUN
-        value: "3"
+        value: "8"
       - key: BACKFILL_MAX_CHUNKS_PER_TF
-        value: "6"
+        value: "120"
       - key: COINBASE_API_BASE_URL
         value: "https://api.coinbase.com"
       - key: SECRET_ENCRYPTION_KEY
@@ -100,15 +100,15 @@ services:
       - key: COINBASE_API_BASE_URL
         value: "https://api.coinbase.com"
       - key: BACKFILL_5M_DAYS
-        value: "180"
+        value: "730"
       - key: BACKFILL_15M_DAYS
         value: "365"
       - key: BACKFILL_1H_DAYS
         value: "730"
       - key: BACKFILL_MAX_SYMBOLS_PER_RUN
-        value: "3"
+        value: "8"
       - key: BACKFILL_MAX_CHUNKS_PER_TF
-        value: "6"
+        value: "120"
       - key: SECRET_ENCRYPTION_KEY
         sync: false
       - key: COINBASE_API_KEY
@@ -152,15 +152,15 @@ services:
       - key: COINBASE_API_BASE_URL
         value: "https://api.coinbase.com"
       - key: BACKFILL_5M_DAYS
-        value: "180"
+        value: "730"
       - key: BACKFILL_15M_DAYS
         value: "365"
       - key: BACKFILL_1H_DAYS
         value: "730"
       - key: BACKFILL_MAX_SYMBOLS_PER_RUN
-        value: "3"
+        value: "8"
       - key: BACKFILL_MAX_CHUNKS_PER_TF
-        value: "6"
+        value: "120"
       - key: SECRET_ENCRYPTION_KEY
         sync: false
       - key: COINBASE_API_KEY
