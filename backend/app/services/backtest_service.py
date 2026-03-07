@@ -137,6 +137,8 @@ def _normalize_input_tickers(value: Any) -> list[str]:
     seen: set[str] = set()
     for item in value:
         ticker = str(item).strip().upper()
+        if ticker.endswith("-USDC"):
+            ticker = ticker[:-5]
         if not ticker or ticker in seen:
             continue
         seen.add(ticker)
@@ -508,7 +510,10 @@ def _build_backtest_plan(
     )
 
     requested_days = max(1.0, (requested_end - requested_start).total_seconds() / 86400.0)
-    auto_enforced_floor = requested_days >= LONG_WINDOW_AUTO_COVERAGE_DAYS
+    auto_enforced_floor = (
+        runtime_strategy == "StrategyTrendRetrace70"
+        and requested_days >= LONG_WINDOW_AUTO_COVERAGE_DAYS
+    )
     listing_age_filter_enabled = runtime_strategy == "StrategyTrendRetrace70" and auto_enforced_floor
     listed_before_ts = requested_start if listing_age_filter_enabled else None
 

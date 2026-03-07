@@ -11,6 +11,58 @@ from app.core.secrets import mask_key_id, secret_manager
 from app.models.entities import Setting
 from app.schemas.settings import DEFAULT_FEES, DEFAULT_RISK, DEFAULT_STRATEGY, DEFAULT_UNIVERSE
 
+_LEGACY_DEFAULT_UNIVERSE_INPUT = [
+    "DYDX",
+    "INJ",
+    "ICP",
+    "GALA",
+    "AXS",
+    "TRB",
+    "ONDO",
+    "IOTA",
+    "NOT",
+    "FIL",
+    "NEO",
+    "ENJ",
+    "HYPE",
+    "STRK",
+    "SLP",
+    "ONE",
+    "MINA",
+    "RVN",
+    "RUNE",
+]
+
+
+def _normalize_input_ticker(item: object) -> str:
+    ticker = str(item).strip().upper()
+    if not ticker:
+        return ""
+    if ticker.endswith("-USDC"):
+        return ticker[:-5]
+    return ticker
+
+
+def _normalize_input_tickers(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        ticker = _normalize_input_ticker(item)
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        normalized.append(ticker)
+    return normalized
+
+
+def _is_legacy_default_input_tickers(value: object) -> bool:
+    tickers = _normalize_input_tickers(value)
+    legacy = _normalize_input_tickers(_LEGACY_DEFAULT_UNIVERSE_INPUT)
+    return len(tickers) == len(legacy) and set(tickers) == set(legacy)
+
 
 def _normalize_preset_backtest_params(value: dict | None) -> dict:
     if not isinstance(value, dict):
@@ -30,17 +82,9 @@ def _normalize_preset_backtest_params(value: dict | None) -> dict:
         normalized["history_required_coverage_ratio"] = float(required_ratio)
 
     input_tickers_raw = value.get("input_tickers")
-    if isinstance(input_tickers_raw, list):
-        tickers: list[str] = []
-        seen: set[str] = set()
-        for item in input_tickers_raw:
-            ticker = str(item).strip().upper()
-            if not ticker or ticker in seen:
-                continue
-            seen.add(ticker)
-            tickers.append(ticker)
-        if tickers:
-            normalized["input_tickers"] = tickers
+    tickers = _normalize_input_tickers(input_tickers_raw)
+    if tickers:
+        normalized["input_tickers"] = tickers
 
     return normalized
 
@@ -100,8 +144,16 @@ def _merge_default_strategy_presets(strategy: dict, merged_strategy: dict) -> No
 
 def _default_universe_payload() -> dict:
     payload = deepcopy(DEFAULT_UNIVERSE)
-    payload["input_tickers"] = list(DEFAULT_UNIVERSE_INPUT)
+    payload["input_tickers"] = _normalize_input_tickers(list(DEFAULT_UNIVERSE_INPUT))
     return payload
+
+
+def _normalize_universe_payload(payload: dict) -> dict:
+    normalized = payload.copy()
+    tickers = _normalize_input_tickers(normalized.get("input_tickers"))
+    if tickers:
+        normalized["input_tickers"] = tickers
+    return normalized
 
 
 def create_default_settings(user_id: int) -> Setting:
@@ -147,6 +199,14 @@ def _merge_defaults(row: Setting) -> bool:
     universe = row.universe_json or {}
     merged_universe = _default_universe_payload()
     merged_universe.update(universe)
+    merged_universe = _normalize_universe_payload(merged_universe)
+
+    # One-time migration for existing installations that still carry legacy defaults.
+    if _is_legacy_default_input_tickers(universe.get("input_tickers")):
+        merged_universe["input_tickers"] = _normalize_input_tickers(list(DEFAULT_UNIVERSE_INPUT))
+        merged_universe["top_symbols"] = []
+        merged_universe["ranked"] = []
+        merged_universe["last_recomputed_at"] = None
     if merged_universe != universe:
         row.universe_json = merged_universe
         changed = True
@@ -200,8 +260,17 @@ def update_settings_row(row: Setting, payload: dict) -> Setting:
         row.strategy_params_json = merged
 
     if payload.get("universe_json"):
+        previous_tickers = _normalize_input_tickers(row.universe_json.get("input_tickers", []))
         merged = row.universe_json.copy()
         merged.update(payload["universe_json"])
+        merged = _normalize_universe_payload(merged)
+
+        updated_tickers = _normalize_input_tickers(merged.get("input_tickers", []))
+        if previous_tickers != updated_tickers:
+            merged["top_symbols"] = []
+            merged["ranked"] = []
+            merged["last_recomputed_at"] = None
+
         row.universe_json = merged
 
     if payload.get("fees_json"):

@@ -12,6 +12,23 @@ from app.services.coinbase import coinbase_client
 logger = logging.getLogger(__name__)
 
 
+def _normalize_input_tickers(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        ticker = str(item).strip().upper()
+        if ticker.endswith("-USDC"):
+            ticker = ticker[:-5]
+        if not ticker or ticker in seen:
+            continue
+        seen.add(ticker)
+        normalized.append(ticker)
+    return normalized
+
+
 def compute_30d_quote_volume(product_id: str) -> float:
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=30)
@@ -30,7 +47,7 @@ def compute_30d_quote_volume(product_id: str) -> float:
 
 
 def recompute_universe(db: Session, setting: Setting) -> dict:
-    input_tickers = setting.universe_json.get("input_tickers", [])
+    input_tickers = _normalize_input_tickers(setting.universe_json.get("input_tickers", []))
     instruments = db.scalars(
         select(Instrument).where(
             Instrument.base.in_(input_tickers),
