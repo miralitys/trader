@@ -8,25 +8,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 DEFAULT_UNIVERSE_INPUT = [
-    "DYDX",
-    "INJ",
-    "ICP",
-    "GALA",
-    "AXS",
-    "TRB",
-    "ONDO",
-    "IOTA",
-    "NOT",
-    "FIL",
-    "NEO",
-    "ENJ",
-    "HYPE",
-    "STRK",
-    "SLP",
-    "ONE",
-    "MINA",
-    "RVN",
-    "RUNE",
+    "BTC",
+    "ETH",
+    "SOL",
+    "LINK",
+    "AVAX",
 ]
 
 

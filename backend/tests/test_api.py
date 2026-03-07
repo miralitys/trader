@@ -54,7 +54,7 @@ def test_settings_include_breakout_retest_2_preset(client, auth_header):
     assert target["backtest_params"]["history_min_coverage_ratio"] == 0.005
     assert target["backtest_params"]["history_target_coverage_ratio"] == 0.005
     assert target["backtest_params"]["history_required_coverage_ratio"] == 0.005
-    for ticker in ["BTC", "ETH", "SOL", "XRP", "ADA"]:
+    for ticker in ["BTC", "ETH", "SOL", "LINK", "AVAX"]:
         assert ticker in target["backtest_params"]["input_tickers"]
 
 
@@ -71,7 +71,7 @@ def test_settings_include_trend_retrace_70_preset(client, auth_header):
     assert target["backtest_params"]["history_min_coverage_ratio"] == 0.005
     assert target["backtest_params"]["history_target_coverage_ratio"] == 0.005
     assert target["backtest_params"]["history_required_coverage_ratio"] == 0.2
-    for ticker in ["BTC", "ETH", "SOL", "XRP", "ADA"]:
+    for ticker in ["BTC", "ETH", "SOL", "LINK", "AVAX"]:
         assert ticker in target["backtest_params"]["input_tickers"]
 
 

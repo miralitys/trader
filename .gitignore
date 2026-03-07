@@ -20,3 +20,10 @@ backend/alembic/versions/*.pyc
 .vscode/
 .idea/
 .DS_Store
+
+# Runtime artifacts
+backend/celerybeat-schedule.db
+
+# Local diagnostics bundles
+diagnostics_bundle/
+diagnostics_bundle.zip

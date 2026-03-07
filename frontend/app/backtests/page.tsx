@@ -65,27 +65,8 @@ const BREAKOUT_RETEST_2_TICKERS = [
   'BTC',
   'ETH',
   'SOL',
-  'XRP',
-  'ADA',
-  'DYDX',
-  'INJ',
-  'ICP',
-  'GALA',
-  'AXS',
-  'TRB',
-  'ONDO',
-  'IOTA',
-  'NOT',
-  'FIL',
-  'NEO',
-  'ENJ',
-  'HYPE',
-  'STRK',
-  'SLP',
-  'ONE',
-  'MINA',
-  'RVN',
-  'RUNE'
+  'LINK',
+  'AVAX'
 ]
 
 function EquityMiniChart({ points }: { points: Array<{ ts: string; equity: number }> }) {

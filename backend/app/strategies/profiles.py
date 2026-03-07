@@ -50,22 +50,8 @@ _TREND_RETRACE_70_BACKTEST_INPUT = [
     "BTC",
     "ETH",
     "SOL",
-    "XRP",
-    "ADA",
-    "LINK",
-    "LTC",
-    "BCH",
-    "DOGE",
     "AVAX",
-    "DOT",
-    "ATOM",
-    "UNI",
-    "AAVE",
-    "MATIC",
-    "FIL",
-    "INJ",
-    "ICP",
-    "NEAR",
+    "LINK",
 ]
 
 STRATEGY_PROFILES: dict[str, dict[str, Any]] = {
