@@ -232,6 +232,19 @@ export default function SettingsPage() {
     }
   }
 
+  async function setSystemPaused(paused: boolean) {
+    setError(null)
+    setSuccess(null)
+    try {
+      const endpoint = paused ? '/api/system/pause' : '/api/system/resume'
+      const resp = await apiFetch<MessageResponse>(endpoint, { method: 'POST' })
+      await load()
+      setSuccess(resp.message)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to change kill switch state')
+    }
+  }
+
   if (!settings) {
     return <div>Loading settings...</div>
   }
@@ -290,6 +303,32 @@ export default function SettingsPage() {
 
         <div className="text-xs text-muted">
           Existing Coinbase key hint: {settings.coinbase_api_key_hint || 'not set'}
+        </div>
+
+        <div className="pt-2 border-t border-line" />
+        <div className="text-sm">
+          <span className="text-muted">Kill switch:</span>{' '}
+          <span className={settings.kill_switch_paused ? 'text-bad font-semibold' : 'text-good font-semibold'}>
+            {settings.kill_switch_paused ? 'PAUSED' : 'ACTIVE'}
+          </span>
+        </div>
+        <div className="flex gap-2">
+          <button
+            type="button"
+            className="rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+            onClick={() => void setSystemPaused(true)}
+            disabled={settings.kill_switch_paused}
+          >
+            Pause
+          </button>
+          <button
+            type="button"
+            className="rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+            onClick={() => void setSystemPaused(false)}
+            disabled={!settings.kill_switch_paused}
+          >
+            Resume
+          </button>
         </div>
       </div>
 
