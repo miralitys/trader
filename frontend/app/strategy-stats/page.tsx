@@ -47,6 +47,7 @@ type BatchStatsOut = {
 const ACTIVE_BATCH_STORAGE_KEY = 'trader:strategy-stats:active-batch-id'
 const POLL_INTERVAL_MS = 15_000
 const AUTO_RETRY_DELAY_MS = 120_000
+const QUEUED_STUCK_MINUTES = 10
 const DEFAULT_COMMON_PARAMS = {
   history_min_coverage_ratio: 0.5,
   history_required_coverage_ratio: 0.5,
@@ -82,6 +83,12 @@ function strategyDisplayName(strategy: string): string {
     : strategy
 }
 
+function minutesSince(isoTs: string, nowMs: number): number {
+  const tsMs = new Date(isoTs).getTime()
+  if (!Number.isFinite(tsMs)) return 0
+  return Math.max(0, Math.floor((nowMs - tsMs) / 60000))
+}
+
 export default function StrategyStatsPage() {
   const [batchId, setBatchId] = useState<string | null>(null)
   const [stats, setStats] = useState<BatchStatsOut | null>(null)
@@ -90,6 +97,7 @@ export default function StrategyStatsPage() {
   const [polling, setPolling] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   const pollInFlightRef = useRef(false)
   const retryInFlightRef = useRef(false)
@@ -207,10 +215,36 @@ export default function StrategyStatsPage() {
     void retryIncompleteStrategies(stats)
   }, [stats, batchId])
 
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [])
+
   const sortedStrategies = useMemo(() => {
     const map = new Map(stats?.strategies.map((item) => [item.strategy, item]) || [])
     return STRATEGY_ORDER.map((strategy) => map.get(strategy)).filter(Boolean) as BatchStrategyStats[]
   }, [stats])
+
+  const queuedStuckInfo = useMemo(() => {
+    if (!stats) return null
+    if (stats.summary.queued <= 0 || stats.summary.running > 0) return null
+
+    const queuedRows = stats.strategies.filter((item) => item.status === 'queued')
+    if (!queuedRows.length) return null
+
+    const queuedAges = queuedRows
+      .map((item) => (item.created_at ? minutesSince(item.created_at, nowMs) : null))
+      .filter((value): value is number => value !== null)
+
+    if (!queuedAges.length) return null
+    const oldestQueuedMin = Math.max(...queuedAges)
+    if (oldestQueuedMin < QUEUED_STUCK_MINUTES) return null
+
+    return {
+      oldestQueuedMin,
+      queuedCount: queuedRows.length
+    }
+  }, [stats, nowMs])
 
   return (
     <div className="space-y-4">
@@ -222,6 +256,12 @@ export default function StrategyStatsPage() {
       </div>
 
       {error ? <div className="card p-3 text-bad text-sm whitespace-pre-wrap">{error}</div> : null}
+      {queuedStuckInfo ? (
+        <div className="card p-3 text-bad text-sm">
+          Queue appears stuck: {queuedStuckInfo.queuedCount} backtest(s) queued for up to {queuedStuckInfo.oldestQueuedMin}m
+          with no running task. Check `trader-backtest-worker` logs and restart the worker if needed.
+        </div>
+      ) : null}
 
       <div className="card p-3 flex flex-wrap items-center gap-2">
         <button
