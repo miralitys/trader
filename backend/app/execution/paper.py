@@ -57,7 +57,15 @@ def _trade_strategy(trade: Trade) -> str:
     return str((trade.meta_json or {}).get("strategy") or "StrategyBreakoutRetest")
 
 
-def _initial_equity() -> float:
+def _initial_equity(setting: Setting | None = None) -> float:
+    if setting and isinstance(setting.risk_params_json, dict):
+        raw = setting.risk_params_json.get("initial_equity")
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except (TypeError, ValueError):
+            pass
     return DEFAULT_INITIAL_EQUITY
 
 
@@ -151,8 +159,8 @@ def _daily_weekly_loss_pct(db: Session, mode: str, equity: float) -> tuple[float
     return daily_loss, weekly_loss
 
 
-def _compute_equity(db: Session, mode: str = "paper") -> tuple[float, float, float]:
-    initial = _initial_equity()
+def _compute_equity(db: Session, mode: str = "paper", setting: Setting | None = None) -> tuple[float, float, float]:
+    initial = _initial_equity(setting)
 
     realized = float(
         db.scalar(
@@ -509,7 +517,7 @@ def run_paper_execution_cycle(db: Session, setting: Setting) -> dict:
         signal.status = "expired"
     db.commit()
 
-    equity, _, drawdown_pct = _compute_equity(db, mode="paper")
+    equity, _, drawdown_pct = _compute_equity(db, mode="paper", setting=setting)
     daily_loss_pct, weekly_loss_pct = _daily_weekly_loss_pct(db, "paper", equity)
 
     active_signals = db.scalars(
@@ -728,7 +736,7 @@ def run_paper_execution_cycle(db: Session, setting: Setting) -> dict:
                 _close_position(db, position, trade, take, reason="take_profit", is_market=False)
                 closed_positions += 1
 
-    equity, peak, drawdown = _compute_equity(db, mode="paper")
+    equity, peak, drawdown = _compute_equity(db, mode="paper", setting=setting)
 
     enabled = resolve_strategy_scope((setting.strategy_params_json or {}).get("trade_only_strategy", "both"))
     max_dd_trigger = min(float(_risk_config(name).get("max_drawdown_pct", 10.0)) for name in enabled)

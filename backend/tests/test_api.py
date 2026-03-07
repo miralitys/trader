@@ -2,7 +2,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from app.api.routes import backtests as backtests_route
-from app.models.entities import Backtest, Candle, Instrument
+from app.models.entities import Backtest, Candle, EquitySnapshot, Instrument, Order, Position, Trade
 from app.services import backtest_service
 
 
@@ -380,3 +380,93 @@ def test_backtest_batch_stats_endpoint_aggregates_metrics(client, auth_header, d
     assert by_strategy["StrategyPullbackToTrend"]["error"] == "insufficient_signals"
     assert by_strategy["MeanReversionHardStop"]["status"] == "running"
     assert by_strategy["StrategyTrendRetrace70"]["status"] == "missing"
+
+
+def test_reset_paper_state_clears_trading_tables_and_sets_limit(client, auth_header, db_session):
+    now = datetime.now(timezone.utc)
+    instrument = Instrument(
+        symbol="BTC-USDC",
+        base="BTC",
+        quote="USDC",
+        product_id="BTC-USDC",
+        status="online",
+        min_size=0.0001,
+        size_increment=0.0001,
+        price_increment=0.01,
+    )
+    db_session.add(instrument)
+    db_session.commit()
+    db_session.refresh(instrument)
+
+    db_session.add(
+        Position(
+            mode="paper",
+            instrument_id=instrument.id,
+            side="buy",
+            qty_base=0.1,
+            avg_price=50000.0,
+            unrealized_pnl=0.0,
+            realized_pnl=0.0,
+            status="open",
+        )
+    )
+    db_session.add(
+        Trade(
+            mode="paper",
+            instrument_id=instrument.id,
+            side="buy",
+            qty_base=0.1,
+            qty_quote=5000.0,
+            entry_price=50000.0,
+            exit_price=None,
+            fees=0.0,
+            pnl=0.0,
+            status="open",
+            order_ids_json={},
+            meta_json={},
+        )
+    )
+    db_session.add(
+        Order(
+            mode="paper",
+            instrument_id=instrument.id,
+            client_order_id="reset-test-order-1",
+            exchange_order_id=None,
+            type="limit",
+            side="buy",
+            price=50000.0,
+            size=0.1,
+            status="open",
+            raw_json={},
+        )
+    )
+    db_session.add(
+        EquitySnapshot(
+            mode="paper",
+            equity=9800.0,
+            peak_equity=10000.0,
+            drawdown_pct=2.0,
+            ts=now,
+        )
+    )
+    db_session.commit()
+
+    assert db_session.query(Position).count() == 1
+    assert db_session.query(Trade).count() == 1
+    assert db_session.query(Order).count() == 1
+    assert db_session.query(EquitySnapshot).count() == 1
+
+    resp = client.post("/api/system/paper/reset", headers=auth_header, json={"limit_usd": 10000})
+    assert resp.status_code == 200
+    assert "Limit set to $10,000.00" in resp.json()["message"]
+
+    assert db_session.query(Position).count() == 0
+    assert db_session.query(Trade).count() == 0
+    assert db_session.query(Order).count() == 0
+    assert db_session.query(EquitySnapshot).count() == 0
+
+    settings_resp = client.get("/api/settings", headers=auth_header)
+    assert settings_resp.status_code == 200
+    risk = settings_resp.json()["risk_params_json"]
+    assert risk["initial_equity"] == 10000.0
+    assert risk["max_position_notional_pct"] == 100.0

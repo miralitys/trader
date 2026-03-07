@@ -26,6 +26,10 @@ type Settings = {
   coinbase_api_key_hint?: string | null
 }
 
+type MessageResponse = {
+  message: string
+}
+
 const GENERAL_STRATEGY_KEYS = ['ema200_filter_1h', 'atr_threshold_pct_1h', 'confirm_15m', 'trade_only_strategy']
 const BREAKOUT_STRATEGY_KEYS = ['breakout_lookback', 'breakout_retest_k_atr']
 const PULLBACK_STRATEGY_KEYS = ['pullback_rsi_threshold']
@@ -79,6 +83,8 @@ export default function SettingsPage() {
   const [coinbaseSecret, setCoinbaseSecret] = useState('')
   const [newPresetName, setNewPresetName] = useState('')
   const [newPresetBaseStrategy, setNewPresetBaseStrategy] = useState<BaseStrategy>('StrategyBreakoutRetest')
+  const [paperLimitUsd, setPaperLimitUsd] = useState('10000')
+  const [resettingPaper, setResettingPaper] = useState(false)
 
   const strategyPresets = parseStrategyPresets(settings?.strategy_params_json?.strategy_presets)
 
@@ -199,6 +205,30 @@ export default function SettingsPage() {
       setSuccess('Settings saved')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to save settings')
+    }
+  }
+
+  async function resetPaperState() {
+    const limit = Number(paperLimitUsd)
+    if (!Number.isFinite(limit) || limit <= 0) {
+      setError('Paper limit must be a positive number')
+      return
+    }
+
+    setResettingPaper(true)
+    setError(null)
+    setSuccess(null)
+    try {
+      const resp = await apiFetch<MessageResponse>('/api/system/paper/reset', {
+        method: 'POST',
+        body: JSON.stringify({ limit_usd: limit })
+      })
+      await load()
+      setSuccess(resp.message)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to reset paper state')
+    } finally {
+      setResettingPaper(false)
     }
   }
 
@@ -450,6 +480,31 @@ export default function SettingsPage() {
         <button className="rounded-lg border border-line bg-panel px-4 py-2 text-sm" onClick={load}>
           Reload
         </button>
+      </div>
+
+      <div className="card p-4 space-y-3">
+        <h2 className="font-semibold">Paper reset</h2>
+        <p className="text-xs text-muted">
+          Deletes all trades, open positions, orders and equity snapshots, then sets paper limit.
+        </p>
+        <div className="flex flex-wrap items-end gap-2">
+          <div>
+            <label className="text-xs text-muted">Paper limit ($)</label>
+            <input
+              className="block mt-1 rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm w-40"
+              value={paperLimitUsd}
+              onChange={(e) => setPaperLimitUsd(e.target.value)}
+            />
+          </div>
+          <button
+            type="button"
+            className="rounded-lg border border-line bg-panel px-4 py-2 text-sm disabled:opacity-50"
+            onClick={resetPaperState}
+            disabled={resettingPaper}
+          >
+            {resettingPaper ? 'Resetting...' : 'Reset paper history and open trades'}
+          </button>
+        </div>
       </div>
     </div>
   )
