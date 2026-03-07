@@ -270,6 +270,19 @@ def _proxy_liquidity_24h(db: Session, instrument_id: int, end_ts: datetime) -> f
     return float(sum(c.close * c.volume for c in candles))
 
 
+def _parse_product_new_at(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return _as_utc(parsed)
+
+
 def _fetch_coinbase_products_for_backtest(input_tickers: list[str]) -> tuple[list[dict], str]:
     try:
         products = coinbase_client.get_products()
@@ -302,6 +315,7 @@ def _build_universe_candidates(
     input_tickers: list[str],
     start_ts: datetime,
     end_ts: datetime,
+    listed_before_ts: datetime | None = None,
 ) -> tuple[list[UniverseCandidate], str]:
     by_product = {
         row.product_id: row
@@ -333,6 +347,11 @@ def _build_universe_candidates(
         product_id = product.get("product_id")
         if not product_id:
             continue
+
+        if listed_before_ts is not None:
+            listed_at = _parse_product_new_at(product.get("new_at"))
+            if listed_at is not None and listed_at > listed_before_ts:
+                continue
 
         symbol = product_id
         instrument = by_product.get(product_id) or by_symbol.get(symbol)
@@ -490,6 +509,8 @@ def _build_backtest_plan(
 
     requested_days = max(1.0, (requested_end - requested_start).total_seconds() / 86400.0)
     auto_enforced_floor = requested_days >= LONG_WINDOW_AUTO_COVERAGE_DAYS
+    listing_age_filter_enabled = runtime_strategy == "StrategyTrendRetrace70" and auto_enforced_floor
+    listed_before_ts = requested_start if listing_age_filter_enabled else None
 
     target_coverage_ratio = min(max(target_coverage_ratio, 0.0), 1.0)
     min_coverage_ratio = min(max(min_coverage_ratio, 0.0), 1.0)
@@ -516,6 +537,7 @@ def _build_backtest_plan(
         input_tickers=input_tickers,
         start_ts=requested_start,
         end_ts=requested_end,
+        listed_before_ts=listed_before_ts,
     )
     selected = _select_top5_with_history(
         candidates=candidates,
@@ -549,6 +571,9 @@ def _build_backtest_plan(
     params["history_required_coverage_ratio"] = required_coverage_ratio
     params["history_effective_coverage_ratio"] = round(effective_coverage_ratio, 6)
     params["history_auto_enforced_floor"] = auto_enforced_floor
+    params["history_listing_age_filter_enabled"] = listing_age_filter_enabled
+    if listed_before_ts is not None:
+        params["history_listed_before_ts"] = listed_before_ts.isoformat()
     params["history_requested_days"] = round(requested_days, 2)
     params["input_tickers"] = input_tickers
     params["strategy_requested"] = requested_strategy
@@ -569,6 +594,8 @@ def _build_backtest_plan(
         "effective_coverage_ratio": effective_coverage_ratio,
         "requested_days": requested_days,
         "auto_enforced_floor": auto_enforced_floor,
+        "listing_age_filter_enabled": listing_age_filter_enabled,
+        "listed_before_ts": listed_before_ts,
         "input_tickers": input_tickers,
         "candidates": candidates,
         "universe_source": universe_source,
@@ -615,6 +642,8 @@ def inspect_backtest_history_readiness(
             "target_ratio": plan["target_coverage_ratio"],
             "requested_days": round(plan["requested_days"], 2),
             "auto_enforced_floor": bool(plan["auto_enforced_floor"]),
+            "listing_age_filter_enabled": bool(plan["listing_age_filter_enabled"]),
+            "listed_before_ts": plan["listed_before_ts"].isoformat() if plan["listed_before_ts"] else None,
         },
         "universe": {
             "input_tickers": plan["input_tickers"],
@@ -1357,6 +1386,10 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             selection_rules.append(
                 f"auto_raise_min_coverage_for_long_window({_format_ratio(required_coverage_ratio)})"
             )
+        if plan["listing_age_filter_enabled"] and plan["listed_before_ts"] is not None:
+            selection_rules.append(
+                f"exclude_products_listed_after({plan['listed_before_ts'].isoformat()})"
+            )
 
         assumptions = {
             "execution_model": "CONSERVATIVE_TAKER_ONLY",
@@ -1382,6 +1415,8 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                 "required_coverage_ratio": required_coverage_ratio,
                 "effective_coverage_ratio": round(effective_coverage_ratio, 6),
                 "auto_enforced_floor": bool(plan["auto_enforced_floor"]),
+                "listing_age_filter_enabled": bool(plan["listing_age_filter_enabled"]),
+                "listed_before_ts": plan["listed_before_ts"].isoformat() if plan["listed_before_ts"] else None,
             },
             "fees": {
                 "taker_fee_pct": taker_fee_pct,

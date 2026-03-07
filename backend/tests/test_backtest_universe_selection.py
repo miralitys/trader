@@ -136,7 +136,7 @@ def test_history_readiness_auto_excludes_late_symbols_for_long_window(db_session
         db_session.add(instrument)
         db_session.flush()
 
-        coverage_days = 7 if sym == "NEW" else 220
+        coverage_days = 220
         first_ts = now - timedelta(days=coverage_days)
         db_session.add(
             Candle(
@@ -177,6 +177,7 @@ def test_history_readiness_auto_excludes_late_symbols_for_long_window(db_session
                 "status": "online",
                 "trading_disabled": False,
                 "quote_volume_24h": "9000000",
+                "new_at": now.isoformat(),
             },
             {
                 "product_id": "OLD1-USDC",
@@ -185,6 +186,7 @@ def test_history_readiness_auto_excludes_late_symbols_for_long_window(db_session
                 "status": "online",
                 "trading_disabled": False,
                 "quote_volume_24h": "8000000",
+                "new_at": (start_ts - timedelta(days=30)).isoformat(),
             },
             {
                 "product_id": "OLD2-USDC",
@@ -193,6 +195,7 @@ def test_history_readiness_auto_excludes_late_symbols_for_long_window(db_session
                 "status": "online",
                 "trading_disabled": False,
                 "quote_volume_24h": "7000000",
+                "new_at": (start_ts - timedelta(days=30)).isoformat(),
             },
             {
                 "product_id": "OLD3-USDC",
@@ -201,6 +204,7 @@ def test_history_readiness_auto_excludes_late_symbols_for_long_window(db_session
                 "status": "online",
                 "trading_disabled": False,
                 "quote_volume_24h": "6000000",
+                "new_at": (start_ts - timedelta(days=30)).isoformat(),
             },
             {
                 "product_id": "OLD4-USDC",
@@ -209,6 +213,7 @@ def test_history_readiness_auto_excludes_late_symbols_for_long_window(db_session
                 "status": "online",
                 "trading_disabled": False,
                 "quote_volume_24h": "5000000",
+                "new_at": (start_ts - timedelta(days=30)).isoformat(),
             },
             {
                 "product_id": "OLD5-USDC",
@@ -217,6 +222,7 @@ def test_history_readiness_auto_excludes_late_symbols_for_long_window(db_session
                 "status": "online",
                 "trading_disabled": False,
                 "quote_volume_24h": "4000000",
+                "new_at": (start_ts - timedelta(days=30)).isoformat(),
             },
         ],
     )
@@ -236,6 +242,7 @@ def test_history_readiness_auto_excludes_late_symbols_for_long_window(db_session
 
     assert readiness["ready"] is True
     assert readiness["coverage"]["auto_enforced_floor"] is True
+    assert readiness["coverage"]["listing_age_filter_enabled"] is True
     assert readiness["coverage"]["min_ratio"] >= 0.20
     assert "NEW-USDC" not in readiness["universe"]["selected_top5"]
     assert len(readiness["universe"]["selected_top5"]) == 5

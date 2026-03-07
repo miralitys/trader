@@ -46,6 +46,28 @@ _COMMON_FEES = {
     "backtest_execution_model": "CONSERVATIVE_TAKER_ONLY",
 }
 
+_TREND_RETRACE_70_BACKTEST_INPUT = [
+    "BTC",
+    "ETH",
+    "SOL",
+    "XRP",
+    "ADA",
+    "LINK",
+    "LTC",
+    "BCH",
+    "DOGE",
+    "AVAX",
+    "DOT",
+    "ATOM",
+    "UNI",
+    "AAVE",
+    "MATIC",
+    "FIL",
+    "INJ",
+    "ICP",
+    "NEAR",
+]
+
 STRATEGY_PROFILES: dict[str, dict[str, Any]] = {
     "StrategyBreakoutRetest": {
         "risk": {
@@ -166,7 +188,7 @@ STRATEGY_PROFILES: dict[str, dict[str, Any]] = {
             "history_min_coverage_ratio": 0.005,
             "history_target_coverage_ratio": 0.005,
             "history_required_coverage_ratio": 0.20,
-            "input_tickers": list(DEFAULT_UNIVERSE_INPUT),
+            "input_tickers": list(_TREND_RETRACE_70_BACKTEST_INPUT),
         },
     },
 }
