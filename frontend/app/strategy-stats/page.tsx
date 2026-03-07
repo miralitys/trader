@@ -51,7 +51,8 @@ const QUEUED_STUCK_MINUTES = 10
 const DEFAULT_COMMON_PARAMS = {
   history_min_coverage_ratio: 0.5,
   history_required_coverage_ratio: 0.5,
-  history_target_coverage_ratio: 0.7
+  history_target_coverage_ratio: 0.7,
+  history_allow_degraded: true
 }
 
 const STRATEGY_ORDER: BaseStrategy[] = [
@@ -297,6 +298,7 @@ export default function StrategyStatsPage() {
         <div><span className="text-muted">Batch ID:</span> {batchId || '-'}</div>
         <div>
           <span className="text-muted">Coverage limits:</span> min 50% | required 50% | target 70%
+          {' '}| degraded fallback: on
         </div>
         <div>
           <span className="text-muted">Period:</span>{' '}

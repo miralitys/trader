@@ -269,3 +269,86 @@ def test_run_backtest_returns_cancelled_without_processing(db_session):
 
     assert result.status == "cancelled"
     assert result.metrics_json.get("cancelled") is True
+
+
+def test_history_readiness_allows_degraded_mode_when_requested(db_session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    start_ts = now - timedelta(days=730)
+
+    symbols = ["BTC", "ETH", "SOL", "LINK", "AVAX"]
+    for sym in symbols:
+        instrument = Instrument(
+            symbol=f"{sym}-USDC",
+            base=sym,
+            quote="USDC",
+            product_id=f"{sym}-USDC",
+            status="online",
+            min_size=0.0001,
+            size_increment=0.0001,
+            price_increment=0.0001,
+        )
+        db_session.add(instrument)
+        db_session.flush()
+
+        first_ts = now - timedelta(days=5)
+        db_session.add(
+            Candle(
+                instrument_id=instrument.id,
+                timeframe="5m",
+                ts=first_ts,
+                open=1.0,
+                high=1.1,
+                low=0.9,
+                close=1.0,
+                volume=100.0,
+                source="test",
+            )
+        )
+        db_session.add(
+            Candle(
+                instrument_id=instrument.id,
+                timeframe="5m",
+                ts=now,
+                open=1.0,
+                high=1.1,
+                low=0.9,
+                close=1.0,
+                volume=100.0,
+                source="test",
+            )
+        )
+    db_session.commit()
+
+    monkeypatch.setattr(
+        backtest_service.coinbase_client,
+        "get_products",
+        lambda: [
+            {
+                "product_id": f"{sym}-USDC",
+                "base_currency_id": sym,
+                "quote_currency_id": "USDC",
+                "status": "online",
+                "trading_disabled": False,
+                "quote_volume_24h": "1000000",
+            }
+            for sym in symbols
+        ],
+    )
+
+    readiness = inspect_backtest_history_readiness(
+        db_session,
+        strategy="StrategyBreakoutRetest",
+        start_ts=start_ts,
+        end_ts=now,
+        params={
+            "input_tickers": symbols,
+            "history_min_coverage_ratio": 0.5,
+            "history_target_coverage_ratio": 0.7,
+            "history_required_coverage_ratio": 0.5,
+            "history_allow_degraded": True,
+        },
+    )
+
+    assert readiness["ready"] is True
+    assert readiness["coverage"]["degraded_mode_applied"] is True
+    assert readiness["coverage"]["allow_degraded_history"] is True

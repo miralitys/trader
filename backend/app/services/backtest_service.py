@@ -125,6 +125,20 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 def _format_ratio(value: float) -> str:
     return f"{value:.3f}".rstrip("0").rstrip(".")
 
@@ -510,6 +524,7 @@ def _build_backtest_plan(
     )
 
     requested_days = max(1.0, (requested_end - requested_start).total_seconds() / 86400.0)
+    allow_degraded_history = _to_bool(params.get("history_allow_degraded"), False)
     auto_enforced_floor = (
         runtime_strategy == "StrategyTrendRetrace70"
         and requested_days >= LONG_WINDOW_AUTO_COVERAGE_DAYS
@@ -556,6 +571,25 @@ def _build_backtest_plan(
         requested_end=requested_end,
         effective_start=effective_start,
     )
+    degraded_mode_applied = False
+
+    if allow_degraded_history and candidates and (not selected_symbols or effective_coverage_ratio < required_coverage_ratio):
+        degraded_mode_applied = True
+        min_coverage_ratio = 0.0
+        required_coverage_ratio = 0.0
+        selected = _select_top5_with_history(
+            candidates=candidates,
+            target_coverage_ratio=target_coverage_ratio,
+            min_coverage_ratio=min_coverage_ratio,
+        )
+        selected_symbols = [item.symbol for item in selected]
+        effective_start = _compute_effective_common_start(selected, requested_start, requested_end)
+        effective_coverage_ratio = _effective_coverage_ratio(
+            requested_start=requested_start,
+            requested_end=requested_end,
+            effective_start=effective_start,
+        )
+
     data_availability_report = _build_data_availability_report(candidates)
 
     if not selected_symbols:
@@ -575,6 +609,8 @@ def _build_backtest_plan(
     params["history_min_coverage_ratio"] = min_coverage_ratio
     params["history_required_coverage_ratio"] = required_coverage_ratio
     params["history_effective_coverage_ratio"] = round(effective_coverage_ratio, 6)
+    params["history_allow_degraded"] = allow_degraded_history
+    params["history_degraded_mode_applied"] = degraded_mode_applied
     params["history_auto_enforced_floor"] = auto_enforced_floor
     params["history_listing_age_filter_enabled"] = listing_age_filter_enabled
     if listed_before_ts is not None:
@@ -598,6 +634,8 @@ def _build_backtest_plan(
         "required_coverage_ratio": required_coverage_ratio,
         "effective_coverage_ratio": effective_coverage_ratio,
         "requested_days": requested_days,
+        "allow_degraded_history": allow_degraded_history,
+        "degraded_mode_applied": degraded_mode_applied,
         "auto_enforced_floor": auto_enforced_floor,
         "listing_age_filter_enabled": listing_age_filter_enabled,
         "listed_before_ts": listed_before_ts,
@@ -646,6 +684,8 @@ def inspect_backtest_history_readiness(
             "min_ratio": plan["min_coverage_ratio"],
             "target_ratio": plan["target_coverage_ratio"],
             "requested_days": round(plan["requested_days"], 2),
+            "allow_degraded_history": bool(plan["allow_degraded_history"]),
+            "degraded_mode_applied": bool(plan["degraded_mode_applied"]),
             "auto_enforced_floor": bool(plan["auto_enforced_floor"]),
             "listing_age_filter_enabled": bool(plan["listing_age_filter_enabled"]),
             "listed_before_ts": plan["listed_before_ts"].isoformat() if plan["listed_before_ts"] else None,
@@ -1391,6 +1431,8 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             selection_rules.append(
                 f"auto_raise_min_coverage_for_long_window({_format_ratio(required_coverage_ratio)})"
             )
+        if plan["degraded_mode_applied"]:
+            selection_rules.append("degraded_history_mode(min_coverage=0, required_coverage=0)")
         if plan["listing_age_filter_enabled"] and plan["listed_before_ts"] is not None:
             selection_rules.append(
                 f"exclude_products_listed_after({plan['listed_before_ts'].isoformat()})"
@@ -1419,6 +1461,8 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                 "target_coverage_ratio": target_coverage_ratio,
                 "required_coverage_ratio": required_coverage_ratio,
                 "effective_coverage_ratio": round(effective_coverage_ratio, 6),
+                "allow_degraded_history": bool(plan["allow_degraded_history"]),
+                "degraded_mode_applied": bool(plan["degraded_mode_applied"]),
                 "auto_enforced_floor": bool(plan["auto_enforced_floor"]),
                 "listing_age_filter_enabled": bool(plan["listing_age_filter_enabled"]),
                 "listed_before_ts": plan["listed_before_ts"].isoformat() if plan["listed_before_ts"] else None,
