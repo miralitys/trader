@@ -17,6 +17,8 @@ celery_app.conf.update(
     result_serializer="json",
     timezone="UTC",
     enable_utc=True,
+    broker_connection_retry_on_startup=True,
+    worker_prefetch_multiplier=1,
     imports=("app.workers.tasks",),
     task_default_queue="default",
     task_routes={

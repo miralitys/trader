@@ -109,6 +109,15 @@ function metricText(value: unknown, format?: (num: number) => string): string {
   return format ? format(num) : String(num)
 }
 
+function diagnosticsValue(metrics: Record<string, unknown> | null, path: string[]): unknown {
+  let current: unknown = metrics
+  for (const key of path) {
+    if (!current || typeof current !== 'object' || !(key in current)) return null
+    current = (current as Record<string, unknown>)[key]
+  }
+  return current
+}
+
 function statusClass(status: string | null): string {
   if (status === 'completed') return 'text-good'
   if (status === 'running' || status === 'queued' || status === 'cancelling') return 'text-warn'
@@ -289,6 +298,10 @@ export default function BacktestsPage() {
         const latestRow = strategyRows[0] || null
         const activeRow = strategyRows.find((row) => ACTIVE_STATUSES.has(row.status)) || null
         const baseMetrics = getBaseMetrics(latestRow)
+        const diagnostics =
+          latestRow?.metrics_json && typeof latestRow.metrics_json.diagnostics === 'object'
+            ? (latestRow.metrics_json.diagnostics as Record<string, unknown>)
+            : null
         const readiness = readinessByStrategy[strategy.key] || null
         const runBlockedByHistory = readiness !== null && !readiness.ready
         const lastError =
@@ -388,6 +401,87 @@ export default function BacktestsPage() {
               </div>
             </div>
 
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+              <div className="rounded-lg border border-line bg-panelSoft p-3">
+                <div className="text-xs uppercase text-muted">Signals / Deals</div>
+                <div className="mt-2 text-sm">
+                  Signals: <span className="font-semibold">{metricText(diagnosticsValue(diagnostics, ['signals_generated']))}</span>
+                </div>
+                <div className="text-sm">
+                  Deals: <span className="font-semibold">{metricText(diagnosticsValue(diagnostics, ['trades_executed']))}</span>
+                </div>
+                <div className="text-sm">
+                  Conversion:{' '}
+                  <span className="font-semibold">
+                    {metricText(diagnosticsValue(diagnostics, ['signal_to_trade_conversion']), (num) => `${(num * 100).toFixed(1)}%`)}
+                  </span>
+                </div>
+                <div className="text-sm">
+                  Missed fills:{' '}
+                  <span className="font-semibold">{metricText(diagnosticsValue(diagnostics, ['signals_missed_next_candle']))}</span>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-line bg-panelSoft p-3">
+                <div className="text-xs uppercase text-muted">Entry / Exit Quality</div>
+                <div className="mt-2 text-sm">
+                  Consistency:{' '}
+                  <span className="font-semibold">
+                    {metricText(diagnosticsValue(diagnostics, ['entry_exit_validation', 'consistency_rate']), (num) => `${(num * 100).toFixed(1)}%`)}
+                  </span>
+                </div>
+                <div className="text-sm">
+                  Sequence errors:{' '}
+                  <span className="font-semibold">{metricText(diagnosticsValue(diagnostics, ['entry_exit_validation', 'sequence_errors']))}</span>
+                </div>
+                <div className="text-sm">
+                  Price errors:{' '}
+                  <span className="font-semibold">{metricText(diagnosticsValue(diagnostics, ['entry_exit_validation', 'price_errors']))}</span>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-line bg-panelSoft p-3">
+                <div className="text-xs uppercase text-muted">Stability / Duplicates</div>
+                <div className="mt-2 text-sm">
+                  Timeout exits:{' '}
+                  <span className="font-semibold">{metricText(diagnosticsValue(diagnostics, ['stability', 'timeout_exits']))}</span>
+                </div>
+                <div className="text-sm">
+                  Duplicates:{' '}
+                  <span className="font-semibold">
+                    {metricText(diagnosticsValue(diagnostics, ['stability', 'duplicate_entries']))}/
+                    {metricText(diagnosticsValue(diagnostics, ['stability', 'duplicate_exits']))}
+                  </span>
+                </div>
+                <div className="text-sm">
+                  Overlaps:{' '}
+                  <span className="font-semibold">{metricText(diagnosticsValue(diagnostics, ['stability', 'overlapping_positions']))}</span>
+                </div>
+              </div>
+
+              <div className="rounded-lg border border-line bg-panelSoft p-3">
+                <div className="text-xs uppercase text-muted">Real Fees / Slippage</div>
+                <div className="mt-2 text-sm">
+                  Fees:{' '}
+                  <span className="font-semibold">
+                    {metricText(diagnosticsValue(diagnostics, ['execution_costs', 'total_fees_quote']), (num) => num.toFixed(4))}
+                  </span>
+                </div>
+                <div className="text-sm">
+                  Slippage:{' '}
+                  <span className="font-semibold">
+                    {metricText(diagnosticsValue(diagnostics, ['execution_costs', 'total_slippage_quote']), (num) => num.toFixed(4))}
+                  </span>
+                </div>
+                <div className="text-sm">
+                  Cost %:{' '}
+                  <span className="font-semibold">
+                    {metricText(diagnosticsValue(diagnostics, ['execution_costs', 'realized_cost_pct_of_notional']), (num) => `${num.toFixed(3)}%`)}
+                  </span>
+                </div>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-4">
               <div className="rounded-lg border border-line bg-panelSoft p-3">
                 <div className="text-xs text-muted mb-2">Equity curve</div>
@@ -406,6 +500,7 @@ export default function BacktestsPage() {
                       ? {
                           assumptions: latestRow.metrics_json?.assumptions ?? null,
                           base: latestRow.metrics_json?.base ?? latestRow.metrics_json ?? {},
+                          diagnostics: latestRow.metrics_json?.diagnostics ?? null,
                           stress_1_5x: latestRow.metrics_json?.stress_1_5x ?? null,
                           stress_2_0x: latestRow.metrics_json?.stress_2_0x ?? null
                         }

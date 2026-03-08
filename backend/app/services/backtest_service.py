@@ -47,6 +47,7 @@ SUPPORTED_BACKTEST_STRATEGIES = {
 @dataclass
 class RawTrade:
     symbol: str
+    signal_ts: datetime
     entry_ts: datetime
     exit_ts: datetime
     entry_raw: float
@@ -59,15 +60,29 @@ class RawTrade:
 @dataclass
 class SimTrade:
     symbol: str
+    signal_ts: datetime
     entry_ts: datetime
     exit_ts: datetime
+    entry_raw: float
+    exit_raw: float
     entry_exec: float
     exit_exec: float
     fees_paid: float
+    entry_fee_paid: float
+    exit_fee_paid: float
+    entry_slippage_paid: float
+    exit_slippage_paid: float
     pnl_quote: float
     pnl_r: float
     duration_min: float
     exit_reason: str
+
+
+@dataclass
+class SimulationStats:
+    signals_generated: int = 0
+    entries_filled: int = 0
+    entry_missed_next_candle: int = 0
 
 
 @dataclass
@@ -783,8 +798,9 @@ def _simulate_raw_trades_for_symbol(
     max_hold_hours: int,
     strategy_params: dict | None = None,
     candles_1h: list[CandleData] | None = None,
-) -> list[RawTrade]:
+) -> tuple[list[RawTrade], SimulationStats]:
     trades: list[RawTrade] = []
+    stats = SimulationStats()
     i = 60
     params = strategy_params or {}
     hourly = candles_1h or []
@@ -909,11 +925,15 @@ def _simulate_raw_trades_for_symbol(
             i += 1
             continue
 
+        stats.signals_generated += 1
+
         # Signal is computed on candle close i; earliest entry is next candle i+1.
         next_candle = candles_5m[i + 1]
         if not (next_candle.low <= signal.entry <= next_candle.high):
+            stats.entry_missed_next_candle += 1
             i += 1
             continue
+        stats.entries_filled += 1
 
         entry_ts = next_candle.ts
         entry_raw = signal.entry
@@ -954,6 +974,7 @@ def _simulate_raw_trades_for_symbol(
         trades.append(
             RawTrade(
                 symbol=symbol,
+                signal_ts=window[-1].ts,
                 entry_ts=entry_ts,
                 exit_ts=exit_ts,
                 entry_raw=entry_raw,
@@ -966,7 +987,7 @@ def _simulate_raw_trades_for_symbol(
 
         i = max(i + 1, j)
 
-    return trades
+    return trades, stats
 
 
 def _simulate_raw_trades_for_symbols(
@@ -976,15 +997,16 @@ def _simulate_raw_trades_for_symbols(
     max_hold_hours: int,
     strategy_params: dict,
     candles_1h_by_symbol: dict[str, list[CandleData]] | None = None,
-) -> list[RawTrade]:
+) -> tuple[list[RawTrade], SimulationStats]:
     raw_trades: list[RawTrade] = []
+    aggregate_stats = SimulationStats()
     hourly = candles_1h_by_symbol or {}
 
     for symbol in selected_symbols:
         candles_5m = candles_5m_by_symbol.get(symbol, [])
         if len(candles_5m) < 100:
             continue
-        symbol_trades = _simulate_raw_trades_for_symbol(
+        symbol_trades, symbol_stats = _simulate_raw_trades_for_symbol(
             symbol=symbol,
             candles_5m=candles_5m,
             strategy=strategy,
@@ -993,9 +1015,12 @@ def _simulate_raw_trades_for_symbols(
             candles_1h=hourly.get(symbol, []),
         )
         raw_trades.extend(symbol_trades)
+        aggregate_stats.signals_generated += symbol_stats.signals_generated
+        aggregate_stats.entries_filled += symbol_stats.entries_filled
+        aggregate_stats.entry_missed_next_candle += symbol_stats.entry_missed_next_candle
 
     raw_trades.sort(key=lambda x: x.exit_ts)
-    return raw_trades
+    return raw_trades, aggregate_stats
 
 
 def _optimize_breakout_retest_2(
@@ -1057,7 +1082,7 @@ def _optimize_breakout_retest_2(
             }
         )
 
-        raw_trades = _simulate_raw_trades_for_symbols(
+        raw_trades, _ = _simulate_raw_trades_for_symbols(
             selected_symbols=candidate_symbols,
             candles_5m_by_symbol=candles_5m_by_symbol,
             strategy="StrategyBreakoutRetest",
@@ -1125,7 +1150,7 @@ def _optimize_breakout_retest_2(
             }
 
     if best_rank is None:
-        fallback_raw = _simulate_raw_trades_for_symbols(
+        fallback_raw, _ = _simulate_raw_trades_for_symbols(
             selected_symbols=selected_symbols,
             candles_5m_by_symbol=candles_5m_by_symbol,
             strategy="StrategyBreakoutRetest",
@@ -1187,6 +1212,8 @@ def _apply_execution_assumptions(
         entry_exec = trade.entry_raw * (1 + entry_slip / 100.0)
         applied_exit_slip = stop_exit_slip if trade.exit_reason == "stop" else regular_exit_slip
         exit_exec = trade.exit_raw * (1 - applied_exit_slip / 100.0)
+        entry_slippage_paid = entry_exec - trade.entry_raw
+        exit_slippage_paid = trade.exit_raw - exit_exec
 
         entry_fee = entry_exec * (fee_pct / 100.0)
         exit_fee = exit_exec * (fee_pct / 100.0)
@@ -1199,11 +1226,18 @@ def _apply_execution_assumptions(
         sim.append(
             SimTrade(
                 symbol=trade.symbol,
+                signal_ts=trade.signal_ts,
                 entry_ts=trade.entry_ts,
                 exit_ts=trade.exit_ts,
+                entry_raw=trade.entry_raw,
+                exit_raw=trade.exit_raw,
                 entry_exec=entry_exec,
                 exit_exec=exit_exec,
                 fees_paid=fees_paid,
+                entry_fee_paid=entry_fee,
+                exit_fee_paid=exit_fee,
+                entry_slippage_paid=entry_slippage_paid,
+                exit_slippage_paid=exit_slippage_paid,
                 pnl_quote=pnl_quote,
                 pnl_r=pnl_r,
                 duration_min=trade.duration_min,
@@ -1263,6 +1297,85 @@ def _build_metrics(trades: list[SimTrade], initial_equity: float) -> tuple[dict,
         "gross_loss": gross_loss,
     }
     return metrics, curve
+
+
+def _build_backtest_diagnostics(
+    *,
+    raw_trades: list[RawTrade],
+    sim_trades: list[SimTrade],
+) -> dict[str, Any]:
+    signal_keys = {(trade.symbol, trade.signal_ts.isoformat()) for trade in raw_trades}
+    entry_keys = [(trade.symbol, trade.entry_ts.isoformat()) for trade in raw_trades]
+    exit_keys = [(trade.symbol, trade.exit_ts.isoformat()) for trade in raw_trades]
+
+    duplicate_entry_count = max(0, len(entry_keys) - len(set(entry_keys)))
+    duplicate_exit_count = max(0, len(exit_keys) - len(set(exit_keys)))
+    timeout_count = sum(1 for trade in raw_trades if trade.exit_reason == "timeout")
+    invalid_sequence_count = sum(1 for trade in raw_trades if trade.entry_ts < trade.signal_ts or trade.exit_ts < trade.entry_ts)
+    invalid_price_count = sum(1 for trade in raw_trades if trade.entry_raw <= 0 or trade.exit_raw <= 0 or trade.stop_price <= 0)
+
+    overlaps = 0
+    per_symbol: dict[str, list[RawTrade]] = {}
+    for trade in raw_trades:
+        per_symbol.setdefault(trade.symbol, []).append(trade)
+    for symbol_trades in per_symbol.values():
+        symbol_trades.sort(key=lambda item: item.entry_ts)
+        prev_exit: datetime | None = None
+        for trade in symbol_trades:
+            if prev_exit is not None and trade.entry_ts < prev_exit:
+                overlaps += 1
+            prev_exit = trade.exit_ts
+
+    total_fees = float(sum(trade.fees_paid for trade in sim_trades))
+    total_entry_fees = float(sum(trade.entry_fee_paid for trade in sim_trades))
+    total_exit_fees = float(sum(trade.exit_fee_paid for trade in sim_trades))
+    total_entry_slippage = float(sum(trade.entry_slippage_paid for trade in sim_trades))
+    total_exit_slippage = float(sum(trade.exit_slippage_paid for trade in sim_trades))
+    total_slippage = total_entry_slippage + total_exit_slippage
+    avg_fee_per_trade = total_fees / len(sim_trades) if sim_trades else 0.0
+    avg_slippage_per_trade = total_slippage / len(sim_trades) if sim_trades else 0.0
+    entry_notional = float(sum(abs(trade.entry_raw) for trade in sim_trades))
+    exit_notional = float(sum(abs(trade.exit_raw) for trade in sim_trades))
+    combined_notional = entry_notional + exit_notional
+    realized_cost_pct = ((total_fees + total_slippage) / combined_notional * 100.0) if combined_notional > 0 else 0.0
+
+    return {
+        "signals_generated": len(signal_keys),
+        "trades_executed": len(raw_trades),
+        "signal_to_trade_conversion": (len(raw_trades) / len(signal_keys)) if signal_keys else 0.0,
+        "entry_exit_validation": {
+            "sequence_ok": invalid_sequence_count == 0,
+            "sequence_errors": invalid_sequence_count,
+            "price_errors": invalid_price_count,
+            "consistency_rate": (
+                max(0.0, 1.0 - ((invalid_sequence_count + invalid_price_count) / len(raw_trades)))
+                if raw_trades
+                else 1.0
+            ),
+        },
+        "stability": {
+            "timeout_exits": timeout_count,
+            "timeout_rate": (timeout_count / len(raw_trades)) if raw_trades else 0.0,
+            "duplicate_entries": duplicate_entry_count,
+            "duplicate_exits": duplicate_exit_count,
+            "overlapping_positions": overlaps,
+            "has_anomalies": any(
+                value > 0
+                for value in (timeout_count, duplicate_entry_count, duplicate_exit_count, overlaps, invalid_sequence_count, invalid_price_count)
+            ),
+        },
+        "execution_costs": {
+            "total_fees_quote": total_fees,
+            "entry_fees_quote": total_entry_fees,
+            "exit_fees_quote": total_exit_fees,
+            "total_slippage_quote": total_slippage,
+            "entry_slippage_quote": total_entry_slippage,
+            "exit_slippage_quote": total_exit_slippage,
+            "avg_fee_per_trade_quote": avg_fee_per_trade,
+            "avg_slippage_per_trade_quote": avg_slippage_per_trade,
+            "realized_cost_pct_of_notional": realized_cost_pct,
+        },
+    }
 
 
 def _cancelled_metrics(reason: str) -> dict[str, Any]:
@@ -1427,6 +1540,7 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
                     requested_end,
                 )
 
+        raw_trade_stats = SimulationStats()
         if requested_strategy == STRATEGY_BREAKOUT_RETEST_2 and runtime_strategy == "StrategyBreakoutRetest":
             raw_trades, optimization_meta = _optimize_breakout_retest_2(
                 selected_symbols=selected_symbols,
@@ -1443,7 +1557,7 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             if isinstance(chosen_config, dict):
                 strategy_params.update(chosen_config)
         else:
-            raw_trades = _simulate_raw_trades_for_symbols(
+            raw_trades, raw_trade_stats = _simulate_raw_trades_for_symbols(
                 selected_symbols=selected_symbols,
                 candles_5m_by_symbol=candles_5m_by_symbol,
                 strategy=runtime_strategy,
@@ -1512,6 +1626,7 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
 
         scenario_metrics: dict[str, dict] = {}
         base_curve: list[dict] = []
+        base_sim_trades: list[SimTrade] = []
 
         for name, mult in scenario_multipliers.items():
             sim_trades = _apply_execution_assumptions(
@@ -1526,6 +1641,7 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             scenario_metrics[name] = metrics
             if name == "base":
                 base_curve = curve
+                base_sim_trades = sim_trades
 
         if _is_cancelled_by_user(db, backtest):
             return _finalize_as_cancelled(db, backtest, "cancelled_by_user")
@@ -1595,11 +1711,21 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             assumptions["strategy_optimization"] = optimization_meta
 
         base_metrics = scenario_metrics.get("base", {})
+        diagnostics = _build_backtest_diagnostics(raw_trades=raw_trades, sim_trades=base_sim_trades)
+        diagnostics["signals_generated"] = raw_trade_stats.signals_generated
+        diagnostics["trades_executed"] = raw_trade_stats.entries_filled
+        diagnostics["signals_missed_next_candle"] = raw_trade_stats.entry_missed_next_candle
+        diagnostics["signal_to_trade_conversion"] = (
+            raw_trade_stats.entries_filled / raw_trade_stats.signals_generated
+            if raw_trade_stats.signals_generated
+            else 0.0
+        )
         metrics_json = {
             **base_metrics,
             "base": base_metrics,
             "stress_1_5x": scenario_metrics.get("stress_1_5x", {}),
             "stress_2_0x": scenario_metrics.get("stress_2_0x", {}),
+            "diagnostics": diagnostics,
             "assumptions": assumptions,
             "data_availability": data_availability_report,
             "raw_trades_count": len(raw_trades),

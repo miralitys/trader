@@ -3,7 +3,10 @@ from datetime import datetime, timedelta, timezone
 from app.models.entities import Backtest, Candle, Instrument
 from app.services import backtest_service
 from app.services.backtest_service import (
+    RawTrade,
+    SimTrade,
     UniverseCandidate,
+    _build_backtest_diagnostics,
     _select_top5_with_history,
     fail_stale_backtests,
     inspect_backtest_history_readiness,
@@ -353,3 +356,80 @@ def test_history_readiness_rejects_sparse_history_even_when_degraded_requested(d
     assert readiness["reason"] == "ok"
     assert readiness["coverage"]["degraded_mode_applied"] is True
     assert readiness["coverage"]["allow_degraded_history"] is True
+
+
+def test_build_backtest_diagnostics_reports_costs_and_anomalies():
+    now = datetime.now(timezone.utc)
+    raw_trades = [
+        RawTrade(
+            symbol="BTC-USDC",
+            signal_ts=now,
+            entry_ts=now + timedelta(minutes=5),
+            exit_ts=now + timedelta(minutes=35),
+            entry_raw=100.0,
+            exit_raw=102.0,
+            stop_price=99.0,
+            exit_reason="take_profit",
+            duration_min=30.0,
+        ),
+        RawTrade(
+            symbol="BTC-USDC",
+            signal_ts=now + timedelta(minutes=60),
+            entry_ts=now + timedelta(minutes=65),
+            exit_ts=now + timedelta(minutes=125),
+            entry_raw=101.0,
+            exit_raw=100.0,
+            stop_price=99.5,
+            exit_reason="timeout",
+            duration_min=60.0,
+        ),
+    ]
+    sim_trades = [
+        SimTrade(
+            symbol="BTC-USDC",
+            signal_ts=raw_trades[0].signal_ts,
+            entry_ts=raw_trades[0].entry_ts,
+            exit_ts=raw_trades[0].exit_ts,
+            entry_raw=100.0,
+            exit_raw=102.0,
+            entry_exec=100.1,
+            exit_exec=101.9,
+            fees_paid=0.5,
+            entry_fee_paid=0.25,
+            exit_fee_paid=0.25,
+            entry_slippage_paid=0.1,
+            exit_slippage_paid=0.1,
+            pnl_quote=1.3,
+            pnl_r=1.3,
+            duration_min=30.0,
+            exit_reason="take_profit",
+        ),
+        SimTrade(
+            symbol="BTC-USDC",
+            signal_ts=raw_trades[1].signal_ts,
+            entry_ts=raw_trades[1].entry_ts,
+            exit_ts=raw_trades[1].exit_ts,
+            entry_raw=101.0,
+            exit_raw=100.0,
+            entry_exec=101.1,
+            exit_exec=99.9,
+            fees_paid=0.5,
+            entry_fee_paid=0.25,
+            exit_fee_paid=0.25,
+            entry_slippage_paid=0.1,
+            exit_slippage_paid=0.1,
+            pnl_quote=-1.7,
+            pnl_r=-1.13,
+            duration_min=60.0,
+            exit_reason="timeout",
+        ),
+    ]
+
+    diagnostics = _build_backtest_diagnostics(raw_trades=raw_trades, sim_trades=sim_trades)
+
+    assert diagnostics["signals_generated"] == 2
+    assert diagnostics["trades_executed"] == 2
+    assert diagnostics["stability"]["timeout_exits"] == 1
+    assert diagnostics["entry_exit_validation"]["sequence_ok"] is True
+    assert diagnostics["execution_costs"]["total_fees_quote"] == 1.0
+    assert diagnostics["execution_costs"]["total_slippage_quote"] == 0.4
