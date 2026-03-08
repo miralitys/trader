@@ -11,7 +11,7 @@ from app.models.entities import Candle, Instrument, Setting, Signal
 from app.strategies.breakout_retest import generate_breakout_retest_signal
 from app.strategies.indicators import atr, ema
 from app.strategies.mean_reversion_hard_stop import generate_mean_reversion_hard_stop_signal
-from app.strategies.profiles import get_strategy_profile, resolve_strategy_scope
+from app.strategies.profiles import apply_strategy_overrides, get_strategy_profile, resolve_strategy_scope
 from app.strategies.pullback_trend import generate_pullback_signal
 from app.strategies.trend_retrace_70 import generate_trend_retrace_70_signal
 from app.strategies.types import CandleData, SignalPlan
@@ -165,7 +165,11 @@ def run_strategy_cycle(db: Session, setting: Setting) -> dict:
             if _signal_exists(db, instrument.id, strategy_name):
                 continue
 
-            profile = get_strategy_profile(strategy_name)
+            profile = apply_strategy_overrides(
+                get_strategy_profile(strategy_name),
+                strategy_preferences,
+                strategy_name,
+            )
             signal_cfg = profile.get("signal", {})
             risk_cfg = profile.get("risk", {})
 

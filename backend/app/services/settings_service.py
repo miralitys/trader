@@ -10,6 +10,7 @@ from app.core.config import DEFAULT_UNIVERSE_INPUT, settings
 from app.core.secrets import mask_key_id, secret_manager
 from app.models.entities import Setting
 from app.schemas.settings import DEFAULT_FEES, DEFAULT_RISK, DEFAULT_STRATEGY, DEFAULT_UNIVERSE
+from app.strategies.profiles import SUPPORTED_STRATEGIES
 
 _LEGACY_DEFAULT_UNIVERSE_INPUT = [
     "DYDX",
@@ -142,6 +143,42 @@ def _merge_default_strategy_presets(strategy: dict, merged_strategy: dict) -> No
     merged_strategy["strategy_presets"] = result
 
 
+def _normalize_strategy_overrides(value: object) -> dict:
+    if not isinstance(value, dict):
+        return {}
+
+    normalized: dict[str, dict] = {}
+    for strategy_name in SUPPORTED_STRATEGIES:
+        raw = value.get(strategy_name)
+        if isinstance(raw, dict):
+            normalized[strategy_name] = raw.copy()
+        else:
+            normalized[strategy_name] = {}
+    return normalized
+
+
+def _merge_strategy_overrides(base_value: object, incoming_value: object) -> dict:
+    base = _normalize_strategy_overrides(base_value)
+    if not isinstance(incoming_value, dict):
+        return base
+
+    for strategy_name in SUPPORTED_STRATEGIES:
+        incoming_strategy = incoming_value.get(strategy_name)
+        if not isinstance(incoming_strategy, dict):
+            continue
+
+        current = base.get(strategy_name, {}).copy()
+        for section, payload in incoming_strategy.items():
+            if not isinstance(payload, dict):
+                continue
+            existing_section = current.get(section, {})
+            merged_section = existing_section.copy() if isinstance(existing_section, dict) else {}
+            merged_section.update(payload)
+            current[section] = merged_section
+        base[strategy_name] = current
+    return base
+
+
 def _default_universe_payload() -> dict:
     payload = deepcopy(DEFAULT_UNIVERSE)
     payload["input_tickers"] = _normalize_input_tickers(list(DEFAULT_UNIVERSE_INPUT))
@@ -184,6 +221,9 @@ def _merge_defaults(row: Setting) -> bool:
     strategy = row.strategy_params_json or {}
     merged_strategy = deepcopy(DEFAULT_STRATEGY)
     merged_strategy.update(strategy)
+    merged_strategy["strategy_overrides"] = _normalize_strategy_overrides(
+        strategy.get("strategy_overrides", merged_strategy.get("strategy_overrides", {}))
+    )
     _merge_default_strategy_presets(strategy, merged_strategy)
     if merged_strategy != strategy:
         row.strategy_params_json = merged_strategy
@@ -257,6 +297,10 @@ def update_settings_row(row: Setting, payload: dict) -> Setting:
     if payload.get("strategy_params_json"):
         merged = row.strategy_params_json.copy()
         merged.update(payload["strategy_params_json"])
+        merged["strategy_overrides"] = _merge_strategy_overrides(
+            row.strategy_params_json.get("strategy_overrides", {}),
+            payload["strategy_params_json"].get("strategy_overrides", {}),
+        )
         row.strategy_params_json = merged
 
     if payload.get("universe_json"):

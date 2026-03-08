@@ -19,6 +19,8 @@ STRATEGY_ALIASES = {
     "trend_retrace_70": "StrategyTrendRetrace70",
 }
 
+PROFILE_SECTION_KEYS = ("signal", "risk", "fees", "backtest")
+
 DEFAULT_INITIAL_EQUITY = 10000.0
 
 _COMMON_RISK = {
@@ -201,3 +203,43 @@ def get_strategy_profile(strategy: str | None) -> dict[str, Any]:
     normalized = normalize_strategy_name(strategy)
     profile = STRATEGY_PROFILES.get(normalized, STRATEGY_PROFILES["StrategyBreakoutRetest"])
     return deepcopy(profile)
+
+
+def get_strategy_overrides(strategy_params: dict[str, Any] | None, strategy: str | None) -> dict[str, dict[str, Any]]:
+    normalized = normalize_strategy_name(strategy)
+    payload = strategy_params if isinstance(strategy_params, dict) else {}
+    raw_overrides = payload.get("strategy_overrides")
+    if not isinstance(raw_overrides, dict):
+        return {}
+
+    strategy_override = raw_overrides.get(normalized)
+    if not isinstance(strategy_override, dict):
+        return {}
+
+    result: dict[str, dict[str, Any]] = {}
+    for section in PROFILE_SECTION_KEYS:
+        section_payload = strategy_override.get(section)
+        if isinstance(section_payload, dict):
+            result[section] = section_payload.copy()
+    return result
+
+
+def apply_strategy_overrides(
+    profile: dict[str, Any],
+    strategy_params: dict[str, Any] | None,
+    strategy: str | None,
+) -> dict[str, Any]:
+    merged = deepcopy(profile)
+    overrides = get_strategy_overrides(strategy_params, strategy)
+    if not overrides:
+        return merged
+
+    for section, section_override in overrides.items():
+        base_section = merged.get(section)
+        if isinstance(base_section, dict):
+            merged_section = base_section.copy()
+            merged_section.update(section_override)
+            merged[section] = merged_section
+        else:
+            merged[section] = section_override.copy()
+    return merged

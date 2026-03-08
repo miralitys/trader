@@ -262,7 +262,8 @@ export default function SettingsPage() {
 
       <div className="card p-3 text-sm">
         Strategy execution now uses embedded per-strategy profiles from backend code (`strategies/profiles.py`).
-        Fields below for Risk/Strategy/Fees are legacy and do not control runtime behavior.
+        Optional runtime overrides can be passed per strategy via `strategy_params_json.strategy_overrides`.
+        Fields below for Risk/Strategy/Fees are mostly legacy and kept for compatibility.
       </div>
 
       {error ? <div className="card p-3 text-bad text-sm whitespace-pre-wrap">{error}</div> : null}

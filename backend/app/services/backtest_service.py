@@ -14,7 +14,7 @@ from app.services.coinbase import coinbase_client
 from app.strategies.breakout_retest import generate_breakout_retest_signal
 from app.strategies.indicators import atr, ema
 from app.strategies.mean_reversion_hard_stop import generate_mean_reversion_hard_stop_signal
-from app.strategies.profiles import DEFAULT_INITIAL_EQUITY, get_strategy_profile
+from app.strategies.profiles import DEFAULT_INITIAL_EQUITY, apply_strategy_overrides, get_strategy_profile
 from app.strategies.pullback_trend import generate_pullback_signal
 from app.strategies.trend_retrace_70 import generate_trend_retrace_70_signal
 from app.strategies.types import CandleData
@@ -123,6 +123,20 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _to_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"1", "true", "yes", "on"}:
+            return True
+        if v in {"0", "false", "no", "off"}:
+            return False
+    return default
 
 
 def _format_ratio(value: float) -> str:
@@ -470,7 +484,12 @@ def _build_backtest_plan(
 ) -> dict[str, Any]:
     params = raw_params.copy() if isinstance(raw_params, dict) else {}
     runtime_strategy = _resolve_runtime_strategy_from_values(requested_strategy, params)
-    strategy_profile = get_strategy_profile(runtime_strategy)
+    strategy_params_source = setting.strategy_params_json if setting else {}
+    strategy_profile = apply_strategy_overrides(
+        get_strategy_profile(runtime_strategy),
+        strategy_params_source,
+        runtime_strategy,
+    )
     profile_signal_params = strategy_profile.get("signal", {})
     profile_risk_params = strategy_profile.get("risk", {})
     profile_fee_params = strategy_profile.get("fees", {})
@@ -510,8 +529,7 @@ def _build_backtest_plan(
     )
 
     requested_days = max(1.0, (requested_end - requested_start).total_seconds() / 86400.0)
-    # Degraded-history fallback is disabled to avoid misleading results on sparse history.
-    allow_degraded_history = False
+    allow_degraded_history = _to_bool(params.get("history_allow_degraded"), False)
     auto_enforced_floor = (
         runtime_strategy == "StrategyTrendRetrace70"
         and requested_days >= LONG_WINDOW_AUTO_COVERAGE_DAYS
@@ -559,6 +577,23 @@ def _build_backtest_plan(
         effective_start=effective_start,
     )
     degraded_mode_applied = False
+
+    if allow_degraded_history and candidates and (not selected_symbols or effective_coverage_ratio < required_coverage_ratio):
+        degraded_mode_applied = True
+        min_coverage_ratio = 0.0
+        required_coverage_ratio = 0.0
+        selected = _select_top5_with_history(
+            candidates=candidates,
+            target_coverage_ratio=target_coverage_ratio,
+            min_coverage_ratio=min_coverage_ratio,
+        )
+        selected_symbols = [item.symbol for item in selected]
+        effective_start = _compute_effective_common_start(selected, requested_start, requested_end)
+        effective_coverage_ratio = _effective_coverage_ratio(
+            requested_start=requested_start,
+            requested_end=requested_end,
+            effective_start=effective_start,
+        )
 
     data_availability_report = _build_data_availability_report(candidates)
 

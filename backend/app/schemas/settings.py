@@ -83,6 +83,12 @@ DEFAULT_STRATEGY = {
             },
         },
     ],
+    "strategy_overrides": {
+        "StrategyBreakoutRetest": {},
+        "StrategyPullbackToTrend": {},
+        "MeanReversionHardStop": {},
+        "StrategyTrendRetrace70": {},
+    },
 }
 
 DEFAULT_FEES = {
