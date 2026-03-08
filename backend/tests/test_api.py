@@ -191,6 +191,59 @@ def test_backtest_history_readiness_endpoint_returns_not_ready_for_sparse_data(
     assert payload["coverage"]["required_ratio"] >= 0.2
 
 
+def test_backtest_progress_endpoint_returns_timeframes_and_strategies(client, auth_header, db_session, monkeypatch):
+    now = datetime.now(timezone.utc)
+    instrument = Instrument(
+        symbol="BTC-USDC",
+        base="BTC",
+        quote="USDC",
+        product_id="BTC-USDC",
+        status="online",
+        min_size=0.0001,
+        size_increment=0.0001,
+        price_increment=0.01,
+    )
+    db_session.add(instrument)
+    db_session.commit()
+    db_session.refresh(instrument)
+
+    for timeframe in ("5m", "15m", "1h"):
+        db_session.add(
+            Candle(
+                instrument_id=instrument.id,
+                timeframe=timeframe,
+                ts=now,
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.5,
+                volume=1000.0,
+                source="test",
+            )
+        )
+    db_session.commit()
+
+    monkeypatch.setattr(
+        backtests_route,
+        "inspect_backtest_history_readiness",
+        lambda *args, **kwargs: {
+            "ready": False,
+            "reason": "insufficient_common_history",
+            "coverage": {"effective_ratio": 0.1, "required_ratio": 0.2},
+            "universe": {"selected_top5": ["BTC-USDC"]},
+        },
+    )
+
+    resp = client.get("/api/backtests/progress", headers=auth_header)
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["summary"]["total_strategies"] == 4
+    assert len(payload["timeframes"]) == 3
+    assert len(payload["strategies"]) == 4
+    assert payload["timeframes"][0]["candles"] >= 1
+    assert payload["strategies"][0]["reason"] == "insufficient_common_history"
+
+
 def test_cancel_backtest_endpoint_marks_cancelled_and_revokes_task(client, auth_header, db_session, monkeypatch):
     now = datetime.now(timezone.utc)
     row = Backtest(

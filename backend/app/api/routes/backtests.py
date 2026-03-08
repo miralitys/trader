@@ -8,12 +8,12 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import select
+from sqlalchemy import distinct, func, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
-from app.models.entities import Backtest, User
+from app.models.entities import Backtest, Candle, User
 from app.schemas.backtest import (
     BacktestBatchRunOut,
     BacktestBatchRunRequest,
@@ -22,6 +22,9 @@ from app.schemas.backtest import (
     BacktestHistoryReadinessOut,
     BacktestHistoryReadinessRequest,
     BacktestOut,
+    BacktestProgressOut,
+    BacktestProgressStrategyOut,
+    BacktestProgressTimeframeOut,
     BacktestRunRequest,
 )
 from app.services.backtest_service import inspect_backtest_history_readiness, rolling_24_month_window
@@ -106,6 +109,73 @@ def _extract_base_metrics(metrics: dict[str, Any]) -> dict[str, Any]:
         )
         if key in metrics
     }
+
+
+@router.get("/progress", response_model=BacktestProgressOut)
+def get_backtest_progress(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+) -> BacktestProgressOut:
+    generated_at = datetime.now(timezone.utc)
+    start_ts, end_ts = rolling_24_month_window()
+
+    timeframe_items: list[BacktestProgressTimeframeOut] = []
+    for timeframe in ("5m", "15m", "1h"):
+        candles_count = db.scalar(select(func.count(Candle.id)).where(Candle.timeframe == timeframe)) or 0
+        instruments_count = db.scalar(
+            select(func.count(distinct(Candle.instrument_id))).where(Candle.timeframe == timeframe)
+        ) or 0
+        oldest_ts = db.scalar(select(func.min(Candle.ts)).where(Candle.timeframe == timeframe))
+        latest_ts = db.scalar(select(func.max(Candle.ts)).where(Candle.timeframe == timeframe))
+        timeframe_items.append(
+            BacktestProgressTimeframeOut(
+                timeframe=timeframe,
+                candles=int(candles_count),
+                instruments=int(instruments_count),
+                oldest_ts=oldest_ts,
+                latest_ts=latest_ts,
+            )
+        )
+
+    strategy_items: list[BacktestProgressStrategyOut] = []
+    ready_count = 0
+    for strategy in ALL_BACKTEST_STRATEGIES:
+        readiness = inspect_backtest_history_readiness(
+            db,
+            strategy=strategy,
+            start_ts=start_ts,
+            end_ts=end_ts,
+            params={},
+        )
+        ready = bool(readiness.get("ready"))
+        if ready:
+            ready_count += 1
+        coverage = readiness.get("coverage") if isinstance(readiness.get("coverage"), dict) else {}
+        universe = readiness.get("universe") if isinstance(readiness.get("universe"), dict) else {}
+        strategy_items.append(
+            BacktestProgressStrategyOut(
+                strategy=strategy,
+                ready=ready,
+                reason=str(readiness.get("reason") or "unknown"),
+                effective_ratio=float(coverage.get("effective_ratio") or 0.0),
+                required_ratio=float(coverage.get("required_ratio") or 0.0),
+                selected_top5=list(universe.get("selected_top5") or []),
+            )
+        )
+
+    summary = {
+        "ready_strategies": ready_count,
+        "total_strategies": len(ALL_BACKTEST_STRATEGIES),
+        "not_ready_strategies": len(ALL_BACKTEST_STRATEGIES) - ready_count,
+        "all_ready": ready_count == len(ALL_BACKTEST_STRATEGIES),
+    }
+
+    return BacktestProgressOut(
+        generated_at=generated_at,
+        summary=summary,
+        timeframes=timeframe_items,
+        strategies=strategy_items,
+    )
 
 
 @router.post("/run", response_model=BacktestOut)

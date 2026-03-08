@@ -48,6 +48,31 @@ type StrategyDefinition = {
   label: string
 }
 
+type BacktestProgress = {
+  generated_at: string
+  summary: {
+    ready_strategies: number
+    total_strategies: number
+    not_ready_strategies: number
+    all_ready: boolean
+  }
+  timeframes: Array<{
+    timeframe: string
+    candles: number
+    instruments: number
+    oldest_ts: string | null
+    latest_ts: string | null
+  }>
+  strategies: Array<{
+    strategy: StrategyKey
+    ready: boolean
+    reason: string
+    effective_ratio: number
+    required_ratio: number
+    selected_top5: string[]
+  }>
+}
+
 const STRATEGIES: StrategyDefinition[] = [
   { key: 'StrategyBreakoutRetest', label: 'BreakoutRetest' },
   { key: 'StrategyPullbackToTrend', label: 'PullbackToTrend' },
@@ -130,6 +155,7 @@ export default function BacktestsPage() {
   const [error, setError] = useState<string | null>(null)
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
   const [selectedStrategy, setSelectedStrategy] = useState<StrategyKey>('StrategyBreakoutRetest')
+  const [progress, setProgress] = useState<BacktestProgress | null>(null)
   const [runningByStrategy, setRunningByStrategy] = useState<Record<string, boolean>>({})
   const [stoppingByStrategy, setStoppingByStrategy] = useState<Record<string, boolean>>({})
   const [clearingByStrategy, setClearingByStrategy] = useState<Record<string, boolean>>({})
@@ -194,9 +220,18 @@ export default function BacktestsPage() {
   async function refreshNow() {
     setRefreshing(true)
     try {
-      await Promise.all([loadBacktests(true), loadReadinessForAll()])
+      await Promise.all([loadBacktests(true), loadReadinessForAll(), loadProgress()])
     } finally {
       setRefreshing(false)
+    }
+  }
+
+  async function loadProgress() {
+    try {
+      const data = await apiFetch<BacktestProgress>('/api/backtests/progress')
+      setProgress(data)
+    } catch {
+      setProgress(null)
     }
   }
 
@@ -220,7 +255,7 @@ export default function BacktestsPage() {
   }
 
   useEffect(() => {
-    void Promise.all([loadBacktests(), loadReadinessForAll()])
+    void Promise.all([loadBacktests(), loadReadinessForAll(), loadProgress()])
   }, [])
 
   const rowsByStrategy = useMemo(() => {
@@ -271,6 +306,53 @@ export default function BacktestsPage() {
       </div>
 
       {error ? <div className="card p-3 text-bad text-sm whitespace-pre-wrap">{error}</div> : null}
+
+      {progress ? (
+        <div className="card p-4 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold">History Progress</div>
+              <div className="text-xs text-muted">
+                Ready strategies: {progress.summary.ready_strategies}/{progress.summary.total_strategies}
+                {progress.generated_at ? ` | Checked ${new Date(progress.generated_at).toLocaleTimeString()}` : ''}
+              </div>
+            </div>
+            <div className={`text-sm font-semibold ${progress.summary.all_ready ? 'text-good' : 'text-warn'}`}>
+              {progress.summary.all_ready ? 'All strategies ready' : `${progress.summary.not_ready_strategies} strategy not ready`}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            {progress.timeframes.map((item) => (
+              <div key={item.timeframe} className="rounded-lg border border-line bg-panelSoft p-3">
+                <div className="text-xs uppercase text-muted">{item.timeframe}</div>
+                <div className="mt-1 text-sm">Candles: <span className="font-semibold">{item.candles}</span></div>
+                <div className="text-sm">Pairs: <span className="font-semibold">{item.instruments}</span></div>
+                <div className="text-xs text-muted mt-1">
+                  Latest: {item.latest_ts ? new Date(item.latest_ts).toLocaleString() : '-'}
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+            {progress.strategies.map((item) => (
+              <div key={item.strategy} className="rounded-lg border border-line bg-panelSoft p-3">
+                <div className="text-xs uppercase text-muted">{STRATEGIES.find((strategy) => strategy.key === item.strategy)?.label || item.strategy}</div>
+                <div className={`mt-1 text-sm font-semibold ${item.ready ? 'text-good' : 'text-bad'}`}>
+                  {item.ready ? 'Ready' : item.reason}
+                </div>
+                <div className="text-sm">
+                  Coverage {(item.effective_ratio * 100).toFixed(1)}% / {(item.required_ratio * 100).toFixed(1)}%
+                </div>
+                <div className="text-xs text-muted mt-1">
+                  {item.selected_top5.length ? item.selected_top5.join(', ') : 'No symbols selected yet'}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
 
       <div className="card p-2 sm:p-3">
         <div className="flex flex-wrap gap-2">

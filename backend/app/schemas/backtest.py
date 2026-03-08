@@ -101,3 +101,27 @@ class BacktestBatchStatsOut(BaseModel):
     end_ts: datetime | None = None
     summary: dict
     strategies: list[BacktestBatchStrategyStatsOut]
+
+
+class BacktestProgressTimeframeOut(BaseModel):
+    timeframe: str
+    candles: int
+    instruments: int
+    oldest_ts: datetime | None = None
+    latest_ts: datetime | None = None
+
+
+class BacktestProgressStrategyOut(BaseModel):
+    strategy: str
+    ready: bool
+    reason: str
+    effective_ratio: float
+    required_ratio: float
+    selected_top5: list[str] = Field(default_factory=list)
+
+
+class BacktestProgressOut(BaseModel):
+    generated_at: datetime
+    summary: dict
+    timeframes: list[BacktestProgressTimeframeOut]
+    strategies: list[BacktestProgressStrategyOut]
