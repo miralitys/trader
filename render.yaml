@@ -214,11 +214,11 @@ services:
       - key: CELERY_BEAT_MODE
         value: "history_only"
       - key: CELERY_CONCURRENCY
-        value: "1"
+        value: "2"
       - key: CELERY_POOL
-        value: "solo"
+        value: "prefork"
       - key: CELERY_MAX_TASKS_PER_CHILD
-        value: "5"
+        value: "10"
       - key: CELERY_PREFETCH_MULTIPLIER
         value: "1"
       - key: COINBASE_API_BASE_URL
@@ -230,9 +230,9 @@ services:
       - key: BACKFILL_1H_DAYS
         value: "730"
       - key: BACKFILL_MAX_SYMBOLS_PER_RUN
-        value: "20"
+        value: "30"
       - key: BACKFILL_MAX_CHUNKS_PER_TF
-        value: "360"
+        value: "720"
       - key: SECRET_ENCRYPTION_KEY
         sync: false
       - key: COINBASE_API_KEY
