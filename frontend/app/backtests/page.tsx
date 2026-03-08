@@ -75,6 +75,11 @@ type BacktestProgress = {
 
 type ProgressSnapshot = {
   ts: string
+  timeframes: Array<{
+    timeframe: string
+    candles: number
+    latest_ts: string | null
+  }>
   strategies: Array<{
     strategy: StrategyKey
     effective_ratio: number
@@ -90,7 +95,7 @@ const STRATEGIES: StrategyDefinition[] = [
 ]
 
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling'])
-const POLL_INTERVAL_MS = 15_000
+const POLL_INTERVAL_MS = 3_000
 const PROGRESS_HISTORY_KEY = 'backtest_progress_history_v1'
 const MAX_PROGRESS_SNAPSHOTS = 48
 
@@ -169,16 +174,17 @@ function formatEtaMinutes(minutes: number | null): string {
   return `~${(hours / 24).toFixed(1)} d`
 }
 
-function progressTone(deltaPerHour: number): string {
-  if (deltaPerHour > 0.01) return 'text-good'
+function progressTone(deltaPerHour: number, candleDelta: number): string {
+  if (candleDelta > 0 || deltaPerHour > 0.01) return 'text-good'
   if (deltaPerHour > 0.001) return 'text-warn'
   return 'text-bad'
 }
 
-function progressLabel(deltaPerHour: number): string {
+function progressLabel(deltaPerHour: number, candleDelta: number): string {
+  if (candleDelta > 0) return 'backfill active'
   if (deltaPerHour > 0.01) return 'growing'
   if (deltaPerHour > 0.001) return 'slow'
-  return 'stalled'
+  return 'idle'
 }
 
 export default function BacktestsPage() {
@@ -309,11 +315,16 @@ export default function BacktestsPage() {
 
   useEffect(() => {
     if (typeof window === 'undefined' || !progress?.generated_at) return
-    const snapshot: ProgressSnapshot = {
-      ts: progress.generated_at,
-      strategies: progress.strategies.map((item) => ({
-        strategy: item.strategy,
-        effective_ratio: item.effective_ratio,
+      const snapshot: ProgressSnapshot = {
+        ts: progress.generated_at,
+        timeframes: progress.timeframes.map((item) => ({
+          timeframe: item.timeframe,
+          candles: item.candles,
+          latest_ts: item.latest_ts
+        })),
+        strategies: progress.strategies.map((item) => ({
+          strategy: item.strategy,
+          effective_ratio: item.effective_ratio,
         required_ratio: item.required_ratio
       }))
     }
@@ -334,6 +345,7 @@ export default function BacktestsPage() {
       {
         deltaPerHour: number
         etaMinutes: number | null
+        candleDelta: number
       }
     >()
 
@@ -346,7 +358,7 @@ export default function BacktestsPage() {
         .filter(Boolean) as Array<{ ts: string; effective_ratio: number; required_ratio: number }>
 
       if (points.length < 2) {
-        byStrategy.set(strategy.key, { deltaPerHour: 0, etaMinutes: null })
+        byStrategy.set(strategy.key, { deltaPerHour: 0, etaMinutes: null, candleDelta: 0 })
         continue
       }
 
@@ -359,11 +371,44 @@ export default function BacktestsPage() {
       const deltaPerHour = (last.effective_ratio - first.effective_ratio) / hours
       const remaining = Math.max(0, last.required_ratio - last.effective_ratio)
       const etaMinutes = deltaPerHour > 0 ? (remaining / deltaPerHour) * 60 : null
+      const timeframePoints = progressHistory
+        .map((snapshot) => snapshot.timeframes.find((item) => item.timeframe === '5m'))
+        .filter(Boolean) as Array<{ timeframe: string; candles: number; latest_ts: string | null }>
+      const candleDelta =
+        timeframePoints.length >= 2 ? timeframePoints[timeframePoints.length - 1].candles - timeframePoints[0].candles : 0
 
-      byStrategy.set(strategy.key, { deltaPerHour, etaMinutes })
+      byStrategy.set(strategy.key, { deltaPerHour, etaMinutes, candleDelta })
     }
 
     return byStrategy
+  }, [progressHistory])
+
+  const timeframeInsights = useMemo(() => {
+    const byTimeframe = new Map<
+      string,
+      {
+        candleDelta: number
+        latestMoved: boolean
+      }
+    >()
+
+    for (const timeframe of ['5m', '15m', '1h']) {
+      const points = progressHistory
+        .map((snapshot) => snapshot.timeframes.find((item) => item.timeframe === timeframe))
+        .filter(Boolean) as Array<{ timeframe: string; candles: number; latest_ts: string | null }>
+
+      if (points.length < 2) {
+        byTimeframe.set(timeframe, { candleDelta: 0, latestMoved: false })
+        continue
+      }
+
+      byTimeframe.set(timeframe, {
+        candleDelta: points[points.length - 1].candles - points[0].candles,
+        latestMoved: points[0].latest_ts !== points[points.length - 1].latest_ts
+      })
+    }
+
+    return byTimeframe
   }, [progressHistory])
 
   const rowsByStrategy = useMemo(() => {
@@ -382,12 +427,11 @@ export default function BacktestsPage() {
   }, [selectedStrategy])
 
   useEffect(() => {
-    if (!hasActiveRuns) return
     const timer = window.setInterval(() => {
-      void loadBacktests()
+      void Promise.all([loadBacktests(), loadReadinessForAll(), loadProgress()])
     }, POLL_INTERVAL_MS)
     return () => window.clearInterval(timer)
-  }, [hasActiveRuns])
+  }, [])
 
   return (
     <div className="space-y-4">
@@ -436,6 +480,10 @@ export default function BacktestsPage() {
                 <div className="text-xs uppercase text-muted">{item.timeframe}</div>
                 <div className="mt-1 text-sm">Candles: <span className="font-semibold">{item.candles}</span></div>
                 <div className="text-sm">Pairs: <span className="font-semibold">{item.instruments}</span></div>
+                <div className={`text-sm ${timeframeInsights.get(item.timeframe)?.candleDelta ? 'text-good' : 'text-muted'}`}>
+                  Delta: {timeframeInsights.get(item.timeframe)?.candleDelta ?? 0 > 0 ? '+' : ''}
+                  {timeframeInsights.get(item.timeframe)?.candleDelta ?? 0} candles
+                </div>
                 <div className="text-xs text-muted mt-1">
                   Latest: {item.latest_ts ? new Date(item.latest_ts).toLocaleString() : '-'}
                 </div>
@@ -453,8 +501,12 @@ export default function BacktestsPage() {
                 <div className="text-sm">
                   Coverage {(item.effective_ratio * 100).toFixed(1)}% / {(item.required_ratio * 100).toFixed(1)}%
                 </div>
-                <div className={`text-sm ${progressTone(progressInsights.get(item.strategy)?.deltaPerHour ?? 0)}`}>
-                  Trend: {progressLabel(progressInsights.get(item.strategy)?.deltaPerHour ?? 0)}
+                <div className={`text-sm ${progressTone(progressInsights.get(item.strategy)?.deltaPerHour ?? 0, progressInsights.get(item.strategy)?.candleDelta ?? 0)}`}>
+                  Trend: {progressLabel(progressInsights.get(item.strategy)?.deltaPerHour ?? 0, progressInsights.get(item.strategy)?.candleDelta ?? 0)}
+                </div>
+                <div className="text-sm">
+                  Data delta: {(progressInsights.get(item.strategy)?.candleDelta ?? 0) > 0 ? '+' : ''}
+                  {progressInsights.get(item.strategy)?.candleDelta ?? 0} candles
                 </div>
                 <div className="text-sm">
                   ETA to target: {formatEtaMinutes(progressInsights.get(item.strategy)?.etaMinutes ?? null)}
