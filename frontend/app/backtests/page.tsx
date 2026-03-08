@@ -73,6 +73,15 @@ type BacktestProgress = {
   }>
 }
 
+type ProgressSnapshot = {
+  ts: string
+  strategies: Array<{
+    strategy: StrategyKey
+    effective_ratio: number
+    required_ratio: number
+  }>
+}
+
 const STRATEGIES: StrategyDefinition[] = [
   { key: 'StrategyBreakoutRetest', label: 'BreakoutRetest' },
   { key: 'StrategyPullbackToTrend', label: 'PullbackToTrend' },
@@ -82,6 +91,8 @@ const STRATEGIES: StrategyDefinition[] = [
 
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling'])
 const POLL_INTERVAL_MS = 15_000
+const PROGRESS_HISTORY_KEY = 'backtest_progress_history_v1'
+const MAX_PROGRESS_SNAPSHOTS = 48
 
 function EquityMiniChart({ points }: { points: Array<{ ts: string; equity: number }> }) {
   const chartId = useMemo(() => `equity-${Math.random().toString(36).slice(2)}`, [])
@@ -150,6 +161,26 @@ function statusClass(status: string | null): string {
   return 'text-muted'
 }
 
+function formatEtaMinutes(minutes: number | null): string {
+  if (minutes === null || !Number.isFinite(minutes) || minutes <= 0) return '-'
+  if (minutes < 60) return `~${Math.ceil(minutes)} min`
+  const hours = minutes / 60
+  if (hours < 48) return `~${hours.toFixed(1)} h`
+  return `~${(hours / 24).toFixed(1)} d`
+}
+
+function progressTone(deltaPerHour: number): string {
+  if (deltaPerHour > 0.01) return 'text-good'
+  if (deltaPerHour > 0.001) return 'text-warn'
+  return 'text-bad'
+}
+
+function progressLabel(deltaPerHour: number): string {
+  if (deltaPerHour > 0.01) return 'growing'
+  if (deltaPerHour > 0.001) return 'slow'
+  return 'stalled'
+}
+
 export default function BacktestsPage() {
   const [rows, setRows] = useState<Backtest[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -157,6 +188,7 @@ export default function BacktestsPage() {
   const [selectedStrategy, setSelectedStrategy] = useState<StrategyKey>('StrategyBreakoutRetest')
   const [progress, setProgress] = useState<BacktestProgress | null>(null)
   const [progressError, setProgressError] = useState<string | null>(null)
+  const [progressHistory, setProgressHistory] = useState<ProgressSnapshot[]>([])
   const [runningByStrategy, setRunningByStrategy] = useState<Record<string, boolean>>({})
   const [stoppingByStrategy, setStoppingByStrategy] = useState<Record<string, boolean>>({})
   const [clearingByStrategy, setClearingByStrategy] = useState<Record<string, boolean>>({})
@@ -261,6 +293,79 @@ export default function BacktestsPage() {
     void Promise.all([loadBacktests(), loadReadinessForAll(), loadProgress()])
   }, [])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    try {
+      const raw = window.localStorage.getItem(PROGRESS_HISTORY_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        setProgressHistory(parsed)
+      }
+    } catch {
+      setProgressHistory([])
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !progress?.generated_at) return
+    const snapshot: ProgressSnapshot = {
+      ts: progress.generated_at,
+      strategies: progress.strategies.map((item) => ({
+        strategy: item.strategy,
+        effective_ratio: item.effective_ratio,
+        required_ratio: item.required_ratio
+      }))
+    }
+
+    setProgressHistory((prev) => {
+      const withoutDuplicateTs = prev.filter((item) => item.ts !== snapshot.ts)
+      const next = [...withoutDuplicateTs, snapshot].slice(-MAX_PROGRESS_SNAPSHOTS)
+      try {
+        window.localStorage.setItem(PROGRESS_HISTORY_KEY, JSON.stringify(next))
+      } catch {}
+      return next
+    })
+  }, [progress])
+
+  const progressInsights = useMemo(() => {
+    const byStrategy = new Map<
+      StrategyKey,
+      {
+        deltaPerHour: number
+        etaMinutes: number | null
+      }
+    >()
+
+    for (const strategy of STRATEGIES) {
+      const points = progressHistory
+        .map((snapshot) => {
+          const item = snapshot.strategies.find((entry) => entry.strategy === strategy.key)
+          return item ? { ts: snapshot.ts, effective_ratio: item.effective_ratio, required_ratio: item.required_ratio } : null
+        })
+        .filter(Boolean) as Array<{ ts: string; effective_ratio: number; required_ratio: number }>
+
+      if (points.length < 2) {
+        byStrategy.set(strategy.key, { deltaPerHour: 0, etaMinutes: null })
+        continue
+      }
+
+      const first = points[0]
+      const last = points[points.length - 1]
+      const hours = Math.max(
+        (new Date(last.ts).getTime() - new Date(first.ts).getTime()) / 3_600_000,
+        1 / 60
+      )
+      const deltaPerHour = (last.effective_ratio - first.effective_ratio) / hours
+      const remaining = Math.max(0, last.required_ratio - last.effective_ratio)
+      const etaMinutes = deltaPerHour > 0 ? (remaining / deltaPerHour) * 60 : null
+
+      byStrategy.set(strategy.key, { deltaPerHour, etaMinutes })
+    }
+
+    return byStrategy
+  }, [progressHistory])
+
   const rowsByStrategy = useMemo(() => {
     return STRATEGIES.reduce<Record<StrategyKey, Backtest[]>>((acc, strategy) => {
       acc[strategy.key] = rows.filter((row) => row.strategy === strategy.key)
@@ -347,6 +452,12 @@ export default function BacktestsPage() {
                 </div>
                 <div className="text-sm">
                   Coverage {(item.effective_ratio * 100).toFixed(1)}% / {(item.required_ratio * 100).toFixed(1)}%
+                </div>
+                <div className={`text-sm ${progressTone(progressInsights.get(item.strategy)?.deltaPerHour ?? 0)}`}>
+                  Trend: {progressLabel(progressInsights.get(item.strategy)?.deltaPerHour ?? 0)}
+                </div>
+                <div className="text-sm">
+                  ETA to target: {formatEtaMinutes(progressInsights.get(item.strategy)?.etaMinutes ?? null)}
                 </div>
                 <div className="text-xs text-muted mt-1">
                   {item.selected_top5.length ? item.selected_top5.join(', ') : 'No symbols selected yet'}
