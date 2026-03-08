@@ -28,6 +28,7 @@ from app.schemas.backtest import (
     BacktestRunRequest,
 )
 from app.services.backtest_service import inspect_backtest_history_readiness, rolling_24_month_window
+from app.services.system_state import get_backfill_status
 from app.workers.celery_app import celery_app
 
 router = APIRouter(prefix="/backtests")
@@ -182,6 +183,7 @@ def get_backtest_progress(
     return BacktestProgressOut(
         generated_at=generated_at,
         summary=summary,
+        backfill_status=get_backfill_status(),
         timeframes=timeframe_items,
         strategies=strategy_items,
     )

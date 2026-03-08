@@ -120,8 +120,15 @@ class BacktestProgressStrategyOut(BaseModel):
     selected_top5: list[str] = Field(default_factory=list)
 
 
+class BackfillRuntimeStatusOut(BaseModel):
+    state: str
+    updated_at: datetime | None = None
+    details: dict = Field(default_factory=dict)
+
+
 class BacktestProgressOut(BaseModel):
     generated_at: datetime
     summary: dict
+    backfill_status: BackfillRuntimeStatusOut
     timeframes: list[BacktestProgressTimeframeOut]
     strategies: list[BacktestProgressStrategyOut]

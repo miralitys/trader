@@ -15,6 +15,7 @@ from app.services.backtest_service import BACKTEST_STALE_TIMEOUT_MINUTES, fail_s
 from app.services.coinbase import CoinbaseCredentials
 from app.services.market_data import backfill_history, ingest_candles, sync_instruments
 from app.services.strategy_runner import expire_stale_signals, run_strategy_cycle
+from app.services.system_state import mark_backfill_finished, mark_backfill_running
 from app.services.universe import recompute_universe
 
 
@@ -75,13 +76,19 @@ def backfill_history_task() -> dict:
     with _timed("backfill_history"):
         db = SessionLocal()
         try:
+            mark_backfill_running()
             sync_instruments(db)
             setting = _get_setting(db)
             symbols = setting.universe_json.get("top_symbols", []) if setting else []
             if not symbols and setting:
                 universe = recompute_universe(db, setting)
                 symbols = universe.get("top_symbols", [])
-            return backfill_history(db, symbols=symbols)
+            result = backfill_history(db, symbols=symbols)
+            mark_backfill_finished("idle", result if isinstance(result, dict) else {})
+            return result
+        except Exception as exc:
+            mark_backfill_finished("error", {"error": str(exc)})
+            raise
         finally:
             db.close()
 

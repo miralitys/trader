@@ -233,6 +233,15 @@ def test_backtest_progress_endpoint_returns_timeframes_and_strategies(client, au
             "universe": {"selected_top5": ["BTC-USDC"]},
         },
     )
+    monkeypatch.setattr(
+        backtests_route,
+        "get_backfill_status",
+        lambda: {
+            "state": "running",
+            "updated_at": now.isoformat(),
+            "details": {"symbols": ["BTC-USDC"]},
+        },
+    )
 
     resp = client.get("/api/backtests/progress", headers=auth_header)
     assert resp.status_code == 200
@@ -242,6 +251,7 @@ def test_backtest_progress_endpoint_returns_timeframes_and_strategies(client, au
     assert len(payload["strategies"]) == 4
     assert payload["timeframes"][0]["candles"] >= 1
     assert payload["strategies"][0]["reason"] == "insufficient_common_history"
+    assert payload["backfill_status"]["state"] == "running"
 
 
 def test_cancel_backtest_endpoint_marks_cancelled_and_revokes_task(client, auth_header, db_session, monkeypatch):

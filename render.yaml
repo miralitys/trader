@@ -94,7 +94,7 @@ services:
       - key: CELERY_QUEUES
         value: "default"
       - key: CELERY_WITH_BEAT
-        value: "1"
+        value: "0"
       - key: CELERY_CONCURRENCY
         value: "1"
       - key: CELERY_POOL
@@ -146,7 +146,7 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: PAPER_ENABLED
-        value: "1"
+        value: "0"
       - key: LIVE_ENABLED
         value: "0"
       - key: CELERY_QUEUES
@@ -204,13 +204,15 @@ services:
       - key: JWT_SECRET
         generateValue: true
       - key: PAPER_ENABLED
-        value: "1"
+        value: "0"
       - key: LIVE_ENABLED
         value: "0"
       - key: CELERY_QUEUES
         value: "history"
       - key: CELERY_WITH_BEAT
-        value: "0"
+        value: "1"
+      - key: CELERY_BEAT_MODE
+        value: "history_only"
       - key: CELERY_CONCURRENCY
         value: "1"
       - key: CELERY_POOL
@@ -228,9 +230,9 @@ services:
       - key: BACKFILL_1H_DAYS
         value: "730"
       - key: BACKFILL_MAX_SYMBOLS_PER_RUN
-        value: "15"
+        value: "20"
       - key: BACKFILL_MAX_CHUNKS_PER_TF
-        value: "240"
+        value: "360"
       - key: SECRET_ENCRYPTION_KEY
         sync: false
       - key: COINBASE_API_KEY

@@ -56,6 +56,11 @@ type BacktestProgress = {
     not_ready_strategies: number
     all_ready: boolean
   }
+  backfill_status: {
+    state: string
+    updated_at: string | null
+    details: Record<string, unknown>
+  }
   timeframes: Array<{
     timeframe: string
     candles: number
@@ -147,7 +152,7 @@ const STRATEGIES: StrategyDefinition[] = [
 ]
 
 const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling'])
-const POLL_INTERVAL_MS = 3_000
+const POLL_INTERVAL_MS = 600_000
 const PROGRESS_HISTORY_KEY = 'backtest_progress_history_v1'
 const MAX_PROGRESS_SNAPSHOTS = 48
 
@@ -237,6 +242,22 @@ function progressLabel(deltaPerHour: number, candleDelta: number): string {
   if (deltaPerHour > 0.01) return 'growing'
   if (deltaPerHour > 0.001) return 'slow'
   return 'idle'
+}
+
+function backfillStatusText(status: BacktestProgress['backfill_status'] | null): string {
+  if (!status) return 'Backfill status unavailable'
+  if (status.state === 'running') return 'Backfill active now'
+  if (status.state === 'idle') return 'Backfill worker idle'
+  if (status.state === 'error') return 'Backfill worker reported error'
+  return 'Backfill status unavailable'
+}
+
+function backfillStatusTone(status: BacktestProgress['backfill_status'] | null): string {
+  if (!status) return 'text-muted'
+  if (status.state === 'running') return 'text-good'
+  if (status.state === 'error') return 'text-bad'
+  if (status.state === 'idle') return 'text-warn'
+  return 'text-muted'
 }
 
 export default function BacktestsPage() {
@@ -524,8 +545,19 @@ export default function BacktestsPage() {
                 {progress.generated_at ? ` | Checked ${new Date(progress.generated_at).toLocaleTimeString()}` : ''}
               </div>
             </div>
-            <div className={`text-sm font-semibold ${progress.summary.all_ready ? 'text-good' : 'text-warn'}`}>
-              {progress.summary.all_ready ? 'All strategies ready' : `${progress.summary.not_ready_strategies} strategy not ready`}
+            <div className="text-right">
+              <div className={`text-sm font-semibold ${backfillStatusTone(progress.backfill_status)}`}>
+                {backfillStatusText(progress.backfill_status)}
+              </div>
+              <div className={`text-sm font-semibold ${progress.summary.all_ready ? 'text-good' : 'text-warn'}`}>
+                {progress.summary.all_ready ? 'All strategies ready' : `${progress.summary.not_ready_strategies} strategy not ready`}
+              </div>
+              <div className="text-xs text-muted">
+                Updated:{' '}
+                {progress.backfill_status?.updated_at
+                  ? new Date(progress.backfill_status.updated_at).toLocaleTimeString()
+                  : '-'}
+              </div>
             </div>
           </div>
 

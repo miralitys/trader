@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 from celery import Celery
 
 from app.core.config import settings
@@ -27,44 +29,54 @@ celery_app.conf.update(
     },
 )
 
-celery_app.conf.beat_schedule = {
-    "ingest-market-data-every-2-min": {
-        "task": "app.workers.tasks.ingest_market_data_task",
-        "schedule": 120.0,
-    },
-    "run-strategies-every-5-min": {
-        "task": "app.workers.tasks.strategy_runner_task",
-        "schedule": 300.0,
-    },
-    "expire-signals-every-1-min": {
-        "task": "app.workers.tasks.signal_expiry_task",
-        "schedule": 60.0,
-    },
-    "paper-execution-every-1-min": {
-        "task": "app.workers.tasks.paper_execution_task",
-        "schedule": 60.0,
-    },
-    "live-execution-every-1-min": {
-        "task": "app.workers.tasks.live_execution_task",
-        "schedule": 60.0,
-    },
-    "reconciliation-every-3-min": {
-        "task": "app.workers.tasks.reconciliation_task",
-        "schedule": 180.0,
-    },
-    "weekly-universe-refresh": {
-        "task": "app.workers.tasks.universe_selector_task",
-        "schedule": 604800.0,
-    },
-    "historical-backfill-every-10-min": {
-        "task": "app.workers.tasks.backfill_history_task",
-        "schedule": 600.0,
-    },
-    "backtest-stale-guard-every-5-min": {
-        "task": "app.workers.tasks.backtest_reaper_task",
-        "schedule": 300.0,
-    },
-}
+history_only_mode = os.getenv("CELERY_BEAT_MODE", "").strip().lower() == "history_only"
+
+if history_only_mode:
+    celery_app.conf.beat_schedule = {
+        "historical-backfill-every-1-min": {
+            "task": "app.workers.tasks.backfill_history_task",
+            "schedule": 60.0,
+        },
+    }
+else:
+    celery_app.conf.beat_schedule = {
+        "ingest-market-data-every-2-min": {
+            "task": "app.workers.tasks.ingest_market_data_task",
+            "schedule": 120.0,
+        },
+        "run-strategies-every-5-min": {
+            "task": "app.workers.tasks.strategy_runner_task",
+            "schedule": 300.0,
+        },
+        "expire-signals-every-1-min": {
+            "task": "app.workers.tasks.signal_expiry_task",
+            "schedule": 60.0,
+        },
+        "paper-execution-every-1-min": {
+            "task": "app.workers.tasks.paper_execution_task",
+            "schedule": 60.0,
+        },
+        "live-execution-every-1-min": {
+            "task": "app.workers.tasks.live_execution_task",
+            "schedule": 60.0,
+        },
+        "reconciliation-every-3-min": {
+            "task": "app.workers.tasks.reconciliation_task",
+            "schedule": 180.0,
+        },
+        "weekly-universe-refresh": {
+            "task": "app.workers.tasks.universe_selector_task",
+            "schedule": 604800.0,
+        },
+        "historical-backfill-every-10-min": {
+            "task": "app.workers.tasks.backfill_history_task",
+            "schedule": 600.0,
+        },
+        "backtest-stale-guard-every-5-min": {
+            "task": "app.workers.tasks.backtest_reaper_task",
+            "schedule": 300.0,
+        },
+    }
 
 # Ensure all shared_task declarations are registered in this Celery app.
 import app.workers.tasks  # noqa: E402,F401
