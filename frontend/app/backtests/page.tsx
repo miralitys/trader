@@ -87,6 +87,58 @@ type ProgressSnapshot = {
   }>
 }
 
+function isStrategyKey(value: unknown): value is StrategyKey {
+  return STRATEGIES.some((strategy) => strategy.key === value)
+}
+
+function sanitizeProgressSnapshot(value: unknown): ProgressSnapshot | null {
+  if (!value || typeof value !== 'object') return null
+  const raw = value as Record<string, unknown>
+  if (typeof raw.ts !== 'string') return null
+
+  const timeframes = Array.isArray(raw.timeframes)
+    ? raw.timeframes
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null
+          const entry = item as Record<string, unknown>
+          if (typeof entry.timeframe !== 'string') return null
+          return {
+            timeframe: entry.timeframe,
+            candles: typeof entry.candles === 'number' && Number.isFinite(entry.candles) ? entry.candles : 0,
+            latest_ts: typeof entry.latest_ts === 'string' ? entry.latest_ts : null
+          }
+        })
+        .filter(Boolean) as ProgressSnapshot['timeframes']
+    : []
+
+  const strategies = Array.isArray(raw.strategies)
+    ? raw.strategies
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null
+          const entry = item as Record<string, unknown>
+          if (!isStrategyKey(entry.strategy)) return null
+          return {
+            strategy: entry.strategy,
+            effective_ratio:
+              typeof entry.effective_ratio === 'number' && Number.isFinite(entry.effective_ratio)
+                ? entry.effective_ratio
+                : 0,
+            required_ratio:
+              typeof entry.required_ratio === 'number' && Number.isFinite(entry.required_ratio)
+                ? entry.required_ratio
+                : 0
+          }
+        })
+        .filter(Boolean) as ProgressSnapshot['strategies']
+    : []
+
+  return {
+    ts: raw.ts,
+    timeframes,
+    strategies
+  }
+}
+
 const STRATEGIES: StrategyDefinition[] = [
   { key: 'StrategyBreakoutRetest', label: 'BreakoutRetest' },
   { key: 'StrategyPullbackToTrend', label: 'PullbackToTrend' },
@@ -306,7 +358,10 @@ export default function BacktestsPage() {
       if (!raw) return
       const parsed = JSON.parse(raw)
       if (Array.isArray(parsed)) {
-        setProgressHistory(parsed)
+        const sanitized = parsed
+          .map((item) => sanitizeProgressSnapshot(item))
+          .filter(Boolean) as ProgressSnapshot[]
+        setProgressHistory(sanitized)
       }
     } catch {
       setProgressHistory([])
@@ -352,7 +407,7 @@ export default function BacktestsPage() {
     for (const strategy of STRATEGIES) {
       const points = progressHistory
         .map((snapshot) => {
-          const item = snapshot.strategies.find((entry) => entry.strategy === strategy.key)
+          const item = (snapshot.strategies ?? []).find((entry) => entry.strategy === strategy.key)
           return item ? { ts: snapshot.ts, effective_ratio: item.effective_ratio, required_ratio: item.required_ratio } : null
         })
         .filter(Boolean) as Array<{ ts: string; effective_ratio: number; required_ratio: number }>
@@ -372,7 +427,7 @@ export default function BacktestsPage() {
       const remaining = Math.max(0, last.required_ratio - last.effective_ratio)
       const etaMinutes = deltaPerHour > 0 ? (remaining / deltaPerHour) * 60 : null
       const timeframePoints = progressHistory
-        .map((snapshot) => snapshot.timeframes.find((item) => item.timeframe === '5m'))
+        .map((snapshot) => (snapshot.timeframes ?? []).find((item) => item.timeframe === '5m'))
         .filter(Boolean) as Array<{ timeframe: string; candles: number; latest_ts: string | null }>
       const candleDelta =
         timeframePoints.length >= 2 ? timeframePoints[timeframePoints.length - 1].candles - timeframePoints[0].candles : 0
@@ -394,7 +449,7 @@ export default function BacktestsPage() {
 
     for (const timeframe of ['5m', '15m', '1h']) {
       const points = progressHistory
-        .map((snapshot) => snapshot.timeframes.find((item) => item.timeframe === timeframe))
+        .map((snapshot) => (snapshot.timeframes ?? []).find((item) => item.timeframe === timeframe))
         .filter(Boolean) as Array<{ timeframe: string; candles: number; latest_ts: string | null }>
 
       if (points.length < 2) {
