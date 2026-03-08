@@ -1,17 +1,15 @@
 'use client'
 
 import { useEffect, useMemo, useState } from 'react'
-import { createChart, UTCTimestamp } from 'lightweight-charts'
+import { createChart, type UTCTimestamp } from 'lightweight-charts'
 
-import { apiBase, apiFetch } from '@/lib/api'
-import {
-  type BaseStrategy,
-  BUILTIN_STRATEGY_OPTIONS,
-  isBaseStrategy,
-  parseStrategyPresets,
-  strategyLabel,
-  type StrategyPreset
-} from '@/lib/strategies'
+import { apiFetch } from '@/lib/api'
+
+type StrategyKey =
+  | 'StrategyBreakoutRetest'
+  | 'StrategyPullbackToTrend'
+  | 'MeanReversionHardStop'
+  | 'StrategyTrendRetrace70'
 
 type Backtest = {
   id: number
@@ -25,566 +23,303 @@ type Backtest = {
   equity_curve_json: Array<{ ts: string; equity: number }>
 }
 
-type SettingsForBacktests = {
-  strategy_params_json?: Record<string, unknown>
+type StrategyDefinition = {
+  key: StrategyKey
+  label: string
 }
 
-type BacktestHistoryReadiness = {
-  ready: boolean
-  reason: string
-  strategy_requested: string
-  strategy_runtime: string
-  period_requested: { start_ts: string; end_ts: string }
-  period_effective: { start_ts: string; end_ts: string }
-  coverage: {
-    effective_ratio: number
-    required_ratio: number
-    min_ratio: number
-    target_ratio: number
-  }
-  universe: {
-    input_tickers: string[]
-    selected_top5: string[]
-    selection_source: string
-  }
-  data_availability: Array<{
-    symbol: string
-    selected: boolean
-    selection_reason: string
-    coverage_ratio_24m: number
-    first_candle_ts: string | null
-    last_candle_ts: string | null
-  }>
-}
-
-const DEFAULT_STRATEGY_SELECTION = 'builtin:StrategyBreakoutRetest'
-const STRATEGY_BREAKOUT_RETEST_2 = 'StrategyBreakoutRetest 2'
-const BREAKOUT_RETEST_2_SELECTION = 'profile:StrategyBreakoutRetest2'
-const BACKTEST_STALE_TIMEOUT_MINUTES = 60
-const BREAKOUT_RETEST_2_TICKERS = [
-  'BTC',
-  'ETH',
-  'SOL',
-  'LINK',
-  'AVAX'
+const STRATEGIES: StrategyDefinition[] = [
+  { key: 'StrategyBreakoutRetest', label: 'BreakoutRetest' },
+  { key: 'StrategyPullbackToTrend', label: 'PullbackToTrend' },
+  { key: 'MeanReversionHardStop', label: 'MeanReversionHardStop' },
+  { key: 'StrategyTrendRetrace70', label: 'TrendRetrace70' }
 ]
 
+const ACTIVE_STATUSES = new Set(['queued', 'running', 'cancelling'])
+const POLL_INTERVAL_MS = 15_000
+
 function EquityMiniChart({ points }: { points: Array<{ ts: string; equity: number }> }) {
-  const id = useMemo(() => `equity-${Math.random().toString(36).slice(2)}`, [])
+  const chartId = useMemo(() => `equity-${Math.random().toString(36).slice(2)}`, [])
 
   useEffect(() => {
-    const element = document.getElementById(id)
+    const element = document.getElementById(chartId)
     if (!element || points.length === 0) return
+
     const chart = createChart(element, {
       width: element.clientWidth,
       height: 220,
       layout: { textColor: '#0f1720', background: { color: '#fff' } },
       grid: { vertLines: { color: '#edf1f4' }, horzLines: { color: '#edf1f4' } }
     })
+
     const line = chart.addLineSeries({ color: '#0b5bb8', lineWidth: 2 })
     line.setData(
-      points.map((p) => ({
-        time: Math.floor(new Date(p.ts).getTime() / 1000) as UTCTimestamp,
-        value: p.equity
+      points.map((point) => ({
+        time: Math.floor(new Date(point.ts).getTime() / 1000) as UTCTimestamp,
+        value: point.equity
       }))
     )
     chart.timeScale().fitContent()
+
     return () => chart.remove()
-  }, [id, points])
+  }, [chartId, points])
 
-  return <div id={id} className="w-full" />
+  return <div id={chartId} className="w-full" />
 }
 
-function presetOptionValue(name: string): string {
-  return `preset:${encodeURIComponent(name)}`
+function getBaseMetrics(row: Backtest | null): Record<string, unknown> {
+  if (!row) return {}
+  const nested = row.metrics_json?.base
+  if (nested && typeof nested === 'object') return nested as Record<string, unknown>
+  return row.metrics_json ?? {}
 }
 
-function parsePresetOptionValue(selection: string): string | null {
-  if (!selection.startsWith('preset:')) return null
-  return decodeURIComponent(selection.slice('preset:'.length))
+function toNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value === 'string') {
+    const parsed = Number(value)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return null
 }
 
-function resolveSelection(
-  selection: string,
-  presets: StrategyPreset[]
-): { strategy: string; params: Record<string, unknown> } {
-  if (selection === BREAKOUT_RETEST_2_SELECTION) {
-    return {
-        strategy: STRATEGY_BREAKOUT_RETEST_2,
-        params: {
-          strategy_base_strategy: 'StrategyBreakoutRetest',
-          history_min_coverage_ratio: 0.005,
-          history_target_coverage_ratio: 0.005,
-          history_required_coverage_ratio: 0.005,
-          input_tickers: BREAKOUT_RETEST_2_TICKERS
-        }
-      }
-  }
-
-  const presetName = parsePresetOptionValue(selection)
-  if (presetName) {
-    const preset = presets.find((item) => item.name === presetName)
-    if (preset) {
-      const params: Record<string, unknown> = {
-        strategy_base_strategy: preset.base_strategy,
-        strategy_preset_name: preset.name
-      }
-      if (preset.backtest_params?.history_min_coverage_ratio !== undefined) {
-        params.history_min_coverage_ratio = preset.backtest_params.history_min_coverage_ratio
-      }
-      if (preset.backtest_params?.history_target_coverage_ratio !== undefined) {
-        params.history_target_coverage_ratio = preset.backtest_params.history_target_coverage_ratio
-      }
-      if ((preset.backtest_params as Record<string, unknown> | undefined)?.history_required_coverage_ratio !== undefined) {
-        params.history_required_coverage_ratio = (preset.backtest_params as Record<string, unknown>).history_required_coverage_ratio
-      }
-      if (preset.backtest_params?.input_tickers?.length) {
-        params.input_tickers = preset.backtest_params.input_tickers
-      }
-      return {
-        strategy: preset.name,
-        params
-      }
-    }
-  }
-
-  const builtinValue = selection.startsWith('builtin:') ? selection.slice('builtin:'.length) : selection
-  if (isBaseStrategy(builtinValue)) {
-    return {
-      strategy: builtinValue,
-      params: {}
-    }
-  }
-
-  return {
-    strategy: 'StrategyBreakoutRetest',
-    params: {}
-  }
+function metricText(value: unknown, format?: (num: number) => string): string {
+  const num = toNumber(value)
+  if (num === null) return '-'
+  return format ? format(num) : String(num)
 }
 
-function displayStrategy(row: Backtest): string {
-  if (row.strategy === STRATEGY_BREAKOUT_RETEST_2) {
-    return STRATEGY_BREAKOUT_RETEST_2
-  }
-
-  const baseFromParams = row.params_json?.strategy_base_strategy
-  if (isBaseStrategy(baseFromParams)) {
-    return `${row.strategy} (${strategyLabel(baseFromParams)})`
-  }
-
-  if (isBaseStrategy(row.strategy)) {
-    return strategyLabel(row.strategy)
-  }
-
-  return row.strategy
-}
-
-function minutesSince(isoTs: string, nowMs: number): number {
-  const tsMs = new Date(isoTs).getTime()
-  if (!Number.isFinite(tsMs)) return 0
-  return Math.max(0, Math.floor((nowMs - tsMs) / 60000))
-}
-
-function formatDurationMinutes(totalMinutes: number): string {
-  const clamped = Math.max(0, Math.floor(totalMinutes))
-  const hours = Math.floor(clamped / 60)
-  const minutes = clamped % 60
-  if (hours > 0) return `${hours}h ${minutes}m`
-  return `${minutes}m`
+function statusClass(status: string | null): string {
+  if (status === 'completed') return 'text-good'
+  if (status === 'running' || status === 'queued' || status === 'cancelling') return 'text-warn'
+  if (status === 'failed' || status === 'cancelled') return 'text-bad'
+  return 'text-muted'
 }
 
 export default function BacktestsPage() {
-  const defaultEnd = new Date()
-  const defaultStart = new Date(defaultEnd)
-  defaultStart.setFullYear(defaultStart.getFullYear() - 2)
-
   const [rows, setRows] = useState<Backtest[]>([])
-  const [selected, setSelected] = useState<Backtest | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [running, setRunning] = useState(false)
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
+  const [runningByStrategy, setRunningByStrategy] = useState<Record<string, boolean>>({})
+  const [stoppingByStrategy, setStoppingByStrategy] = useState<Record<string, boolean>>({})
+  const [clearingByStrategy, setClearingByStrategy] = useState<Record<string, boolean>>({})
   const [refreshing, setRefreshing] = useState(false)
-  const [nowMs, setNowMs] = useState(() => Date.now())
-  const [lastBacktestsRefreshAt, setLastBacktestsRefreshAt] = useState<number | null>(null)
-  const [strategySelection, setStrategySelection] = useState(DEFAULT_STRATEGY_SELECTION)
-  const [strategyPresets, setStrategyPresets] = useState<StrategyPreset[]>([])
-  const [startTs, setStartTs] = useState(defaultStart.toISOString())
-  const [endTs, setEndTs] = useState(defaultEnd.toISOString())
-  const [readiness, setReadiness] = useState<BacktestHistoryReadiness | null>(null)
-  const [readinessLoading, setReadinessLoading] = useState(false)
-  const [stoppingBacktestId, setStoppingBacktestId] = useState<number | null>(null)
 
-  function baseMetrics(row: Backtest): Record<string, number> {
-    const nested = row.metrics_json?.base as Record<string, number> | undefined
-    if (nested && typeof nested === 'object') return nested
-    return row.metrics_json as Record<string, number>
-  }
-
-  async function loadBacktests(opts?: { force?: boolean }) {
+  async function loadBacktests(force = false) {
     try {
-      const path = opts?.force ? `/api/backtests?refresh_ts=${Date.now()}` : '/api/backtests'
+      const path = force ? `/api/backtests?refresh_ts=${Date.now()}` : '/api/backtests'
       const data = await apiFetch<Backtest[]>(path)
-      const refreshedAt = Date.now()
-      setLastBacktestsRefreshAt(refreshedAt)
-      setNowMs(refreshedAt)
       setRows(data)
-      setSelected((prev) => {
-        if (!data.length) return null
-        if (!prev) return data[0]
-        return data.find((item) => item.id === prev.id) || data[0]
-      })
+      setLastUpdatedAt(Date.now())
+      setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load backtests')
     }
   }
 
-  async function loadStrategyPresets(opts?: { force?: boolean }) {
-    try {
-      const path = opts?.force ? `/api/settings?refresh_ts=${Date.now()}` : '/api/settings'
-      const settings = await apiFetch<SettingsForBacktests>(path)
-      setStrategyPresets(parseStrategyPresets(settings.strategy_params_json?.strategy_presets))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load strategy presets')
-    }
-  }
-
-  async function loadHistoryReadiness() {
-    setReadinessLoading(true)
-    try {
-      const resolved = resolveSelection(strategySelection, strategyPresets)
-      const data = await apiFetch<BacktestHistoryReadiness>('/api/backtests/history-readiness', {
-        method: 'POST',
-        body: JSON.stringify({
-          strategy: resolved.strategy,
-          start_ts: startTs || undefined,
-          end_ts: endTs || undefined,
-          params: resolved.params
-        })
-      })
-      setReadiness(data)
-    } catch {
-      setReadiness(null)
-    } finally {
-      setReadinessLoading(false)
-    }
-  }
-
-  async function loadAll(opts?: { force?: boolean }) {
+  async function runStrategy(strategy: StrategyKey) {
+    setRunningByStrategy((prev) => ({ ...prev, [strategy]: true }))
     setError(null)
-    await Promise.all([loadBacktests(opts), loadStrategyPresets(opts)])
+    try {
+      await apiFetch('/api/backtests/run', {
+        method: 'POST',
+        body: JSON.stringify({ strategy })
+      })
+      await loadBacktests(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to run ${strategy}`)
+    } finally {
+      setRunningByStrategy((prev) => ({ ...prev, [strategy]: false }))
+    }
+  }
+
+  async function stopStrategy(strategy: StrategyKey, backtestId: number) {
+    setStoppingByStrategy((prev) => ({ ...prev, [strategy]: true }))
+    setError(null)
+    try {
+      await apiFetch(`/api/backtests/${backtestId}/cancel`, { method: 'POST' })
+      await loadBacktests(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to stop ${strategy}`)
+    } finally {
+      setStoppingByStrategy((prev) => ({ ...prev, [strategy]: false }))
+    }
+  }
+
+  async function clearStrategyHistory(strategy: StrategyKey) {
+    setClearingByStrategy((prev) => ({ ...prev, [strategy]: true }))
+    setError(null)
+    try {
+      await apiFetch(`/api/backtests/strategy/${encodeURIComponent(strategy)}`, { method: 'DELETE' })
+      await loadBacktests(true)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Failed to clear ${strategy} history`)
+    } finally {
+      setClearingByStrategy((prev) => ({ ...prev, [strategy]: false }))
+    }
   }
 
   async function refreshNow() {
     setRefreshing(true)
     try {
-      await loadAll({ force: true })
-      await loadHistoryReadiness()
+      await loadBacktests(true)
     } finally {
       setRefreshing(false)
     }
   }
 
-  async function runBacktest() {
-    setRunning(true)
-    setError(null)
-    try {
-      const resolved = resolveSelection(strategySelection, strategyPresets)
-      await apiFetch('/api/backtests/run', {
-        method: 'POST',
-        body: JSON.stringify({
-          strategy: resolved.strategy,
-          start_ts: startTs || undefined,
-          end_ts: endTs || undefined,
-          params: resolved.params
-        })
-      })
-      await loadBacktests()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to run backtest')
-    } finally {
-      setRunning(false)
-    }
-  }
-
-  async function stopBacktest(backtestId: number) {
-    setStoppingBacktestId(backtestId)
-    setError(null)
-    try {
-      await apiFetch(`/api/backtests/${backtestId}/cancel`, { method: 'POST' })
-      await loadBacktests({ force: true })
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to stop backtest')
-    } finally {
-      setStoppingBacktestId(null)
-    }
-  }
-
   useEffect(() => {
-    loadAll()
+    void loadBacktests()
   }, [])
 
-  useEffect(() => {
-    const interval = window.setInterval(() => setNowMs(Date.now()), 60000)
-    return () => window.clearInterval(interval)
-  }, [])
+  const rowsByStrategy = useMemo(() => {
+    return STRATEGIES.reduce<Record<StrategyKey, Backtest[]>>((acc, strategy) => {
+      acc[strategy.key] = rows.filter((row) => row.strategy === strategy.key)
+      return acc
+    }, {} as Record<StrategyKey, Backtest[]>)
+  }, [rows])
 
-  useEffect(() => {
-    const hasActiveRuns = rows.some(
-      (item) => item.status === 'running' || item.status === 'queued' || item.status === 'cancelling'
-    )
-    if (!hasActiveRuns) return
-    const interval = window.setInterval(() => {
-      void loadBacktests()
-    }, 15000)
-    return () => window.clearInterval(interval)
+  const hasActiveRuns = useMemo(() => {
+    return rows.some((row) => ACTIVE_STATUSES.has(row.status))
   }, [rows])
 
   useEffect(() => {
-    const presetName = parsePresetOptionValue(strategySelection)
-    if (!presetName) return
-    if (!strategyPresets.some((preset) => preset.name === presetName)) {
-      setStrategySelection(DEFAULT_STRATEGY_SELECTION)
-    }
-  }, [strategySelection, strategyPresets])
-
-  useEffect(() => {
-    void loadHistoryReadiness()
-  }, [strategySelection, strategyPresets, startTs, endTs])
-
-  const runBlockedByHistory = readiness !== null && !readiness.ready
+    if (!hasActiveRuns) return
+    const timer = window.setInterval(() => {
+      void loadBacktests()
+    }, POLL_INTERVAL_MS)
+    return () => window.clearInterval(timer)
+  }, [hasActiveRuns])
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold">Backtests</h1>
-        <p className="text-sm text-muted">Run async backtests and inspect equity/metrics.</p>
-      </div>
-
-      {error ? <div className="card p-3 text-bad text-sm whitespace-pre-wrap">{error}</div> : null}
-
-      <div className="card p-3 grid grid-cols-1 md:grid-cols-4 gap-2">
+      <div className="flex flex-wrap items-end gap-3 justify-between">
         <div>
-          <label className="text-xs text-muted">Strategy</label>
-          <select
-            className="block mt-1 rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm w-full"
-            value={strategySelection}
-            onChange={(e) => setStrategySelection(e.target.value)}
-          >
-            {BUILTIN_STRATEGY_OPTIONS.map((option) => (
-              <option key={option.value} value={`builtin:${option.value}`}>
-                {option.label}
-              </option>
-            ))}
-            <option value={BREAKOUT_RETEST_2_SELECTION}>{STRATEGY_BREAKOUT_RETEST_2}</option>
-            {strategyPresets.length ? (
-              <optgroup label="Presets from Settings">
-                {strategyPresets.map((preset) => (
-                  <option key={preset.name.toLowerCase()} value={presetOptionValue(preset.name)}>
-                    {preset.name} ({strategyLabel(preset.base_strategy)})
-                  </option>
-                ))}
-              </optgroup>
-            ) : null}
-          </select>
+          <h1 className="text-2xl font-semibold">Backtests</h1>
+          <p className="text-sm text-muted">
+            4 independent strategies. Each run uses the backend rolling 2-year window and ignores legacy Risk/Strategy/Fees settings.
+          </p>
         </div>
-        <div>
-          <label className="text-xs text-muted">Start</label>
-          <input
-            className="block mt-1 rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm w-full"
-            value={startTs}
-            onChange={(e) => setStartTs(e.target.value)}
-          />
-        </div>
-        <div>
-          <label className="text-xs text-muted">End</label>
-          <input
-            className="block mt-1 rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm w-full"
-            value={endTs}
-            onChange={(e) => setEndTs(e.target.value)}
-          />
-        </div>
-        <div className="flex items-end gap-2">
+        <div className="flex items-center gap-2">
           <button
-            className="rounded-lg bg-accent text-white px-3 py-2 text-sm disabled:opacity-50"
-            onClick={runBacktest}
-            disabled={running || refreshing || readinessLoading || runBlockedByHistory}
-          >
-            {running ? 'Running...' : runBlockedByHistory ? 'Run blocked (history)' : 'Run'}
-          </button>
-          <button
+            type="button"
             className="rounded-lg border border-line bg-panel px-3 py-2 text-sm disabled:opacity-50"
             onClick={() => void refreshNow()}
             disabled={refreshing}
           >
             {refreshing ? 'Refreshing...' : 'Refresh'}
           </button>
+          <div className="text-xs text-muted">
+            {lastUpdatedAt ? `Updated ${new Date(lastUpdatedAt).toLocaleTimeString()}` : 'Not updated yet'}
+          </div>
         </div>
       </div>
-      {readinessLoading ? (
-        <div className="text-xs text-muted">Checking history readiness...</div>
-      ) : null}
-      {readiness ? (
-        <div className={`card p-3 text-sm ${readiness.ready ? 'text-good' : 'text-bad'}`}>
-          <div className="font-medium">
-            History readiness: {readiness.ready ? 'ready' : 'not ready'} ({(readiness.coverage.effective_ratio * 100).toFixed(1)}%
-            / {(readiness.coverage.required_ratio * 100).toFixed(1)}%)
-          </div>
-          <div className="text-xs text-muted mt-1">
-            Effective: {new Date(readiness.period_effective.start_ts).toLocaleString()} -{' '}
-            {new Date(readiness.period_effective.end_ts).toLocaleString()}
-          </div>
-          {!readiness.ready ? (
-            <div className="text-xs mt-1">
-              reason={readiness.reason}; selected: {readiness.universe.selected_top5.join(', ') || 'none'}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-      {lastBacktestsRefreshAt ? (
-        <div className="text-xs text-muted">
-          Updated: {new Date(lastBacktestsRefreshAt).toLocaleTimeString()}
-        </div>
-      ) : null}
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
-        <div className="xl:col-span-2 card p-3 overflow-auto">
-          <table className="w-full text-sm min-w-[760px]">
-            <thead>
-              <tr className="text-left text-muted">
-                <th>ID</th>
-                <th>Strategy</th>
-                <th>Status</th>
-                <th>Trades</th>
-                <th>PF</th>
-                <th>Winrate</th>
-                <th>Max DD</th>
-                <th>Created</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((r) => (
-                <tr
-                  key={r.id}
-                  className={`border-t border-line cursor-pointer ${selected?.id === r.id ? 'bg-panelSoft' : ''}`}
-                  onClick={() => setSelected(r)}
-                >
-                  <td className="py-2">{r.id}</td>
-                  <td>{displayStrategy(r)}</td>
-                  <td>{r.status}</td>
-                  <td>{baseMetrics(r)?.trades ?? '-'}</td>
-                  <td>{Number(baseMetrics(r)?.profit_factor ?? 0).toFixed(2)}</td>
-                  <td>{Number((baseMetrics(r)?.winrate ?? 0) * 100).toFixed(1)}%</td>
-                  <td>{Number(baseMetrics(r)?.max_drawdown_pct ?? 0).toFixed(2)}%</td>
-                  <td>{new Date(r.created_at).toLocaleString()}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+      {error ? <div className="card p-3 text-bad text-sm whitespace-pre-wrap">{error}</div> : null}
 
-        <div className="card p-3">
-          <h2 className="font-semibold">Run detail</h2>
-          {!selected ? <div className="text-sm text-muted mt-2">Select run from table.</div> : null}
-          {selected ? (
-            <div className="space-y-3 mt-2">
-              {(() => {
-                const inStatusMinutes = minutesSince(selected.created_at, nowMs)
-                const minutesUntilStale = Math.max(0, BACKTEST_STALE_TIMEOUT_MINUTES - inStatusMinutes)
-                const minutesSinceLastRefresh = lastBacktestsRefreshAt
-                  ? minutesSince(new Date(lastBacktestsRefreshAt).toISOString(), nowMs)
-                  : null
-                const showLiveHint =
-                  selected.status === 'running' || selected.status === 'queued' || selected.status === 'cancelling'
-                const isStaleRisk = selected.status === 'running' && inStatusMinutes >= BACKTEST_STALE_TIMEOUT_MINUTES
-                const stoppable = selected.status === 'running' || selected.status === 'queued'
-                return (
-                  <div className="text-sm">
-                    <div><span className="text-muted">ID:</span> {selected.id}</div>
-                    <div><span className="text-muted">Strategy:</span> {displayStrategy(selected)}</div>
-                    <div><span className="text-muted">Status:</span> {selected.status}</div>
-                    <div>
-                      <span className="text-muted">Period:</span> {new Date(selected.start_ts).toLocaleDateString()} -{' '}
-                      {new Date(selected.end_ts).toLocaleDateString()}
-                    </div>
-                    {showLiveHint ? (
-                      <>
-                        <div>
-                          <span className="text-muted">Time in status:</span> {formatDurationMinutes(inStatusMinutes)}
-                        </div>
-                        <div>
-                          <span className="text-muted">Last auto-check:</span>{' '}
-                          {minutesSinceLastRefresh === null
-                            ? 'waiting for first refresh'
-                            : `${formatDurationMinutes(minutesSinceLastRefresh)} ago`}
-                        </div>
-                        <div className={isStaleRisk ? 'text-bad' : 'text-muted'}>
-                          {selected.status === 'queued'
-                            ? 'Queued: waiting for worker execution.'
-                            : isStaleRisk
-                              ? `Likely stuck: running over ${BACKTEST_STALE_TIMEOUT_MINUTES}m.`
-                              : `Running: auto-timeout guard in ~${minutesUntilStale}m.`}
-                        </div>
-                      </>
-                    ) : null}
-                    {stoppable ? (
-                      <div className="mt-2">
-                        <button
-                          className="rounded-lg border border-line bg-panel px-3 py-1 text-sm disabled:opacity-50"
-                          onClick={() => void stopBacktest(selected.id)}
-                          disabled={stoppingBacktestId === selected.id}
-                        >
-                          {stoppingBacktestId === selected.id ? 'Stopping...' : 'Stop'}
-                        </button>
-                      </div>
-                    ) : null}
+      <div className="grid grid-cols-1 gap-4">
+        {STRATEGIES.map((strategy) => {
+          const strategyRows = rowsByStrategy[strategy.key] || []
+          const latestRow = strategyRows[0] || null
+          const activeRow = strategyRows.find((row) => ACTIVE_STATUSES.has(row.status)) || null
+          const baseMetrics = getBaseMetrics(latestRow)
+
+          return (
+            <section key={strategy.key} className="card p-4 space-y-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold">{strategy.label}</h2>
+                  <div className="text-xs text-muted">
+                    History: {strategyRows.length} run(s)
+                    {latestRow ? ` | Last run ${new Date(latestRow.created_at).toLocaleString()}` : ''}
                   </div>
-                )
-              })()}
-
-              <div className="text-xs text-muted">Equity curve</div>
-              <div className="rounded-lg border border-line bg-panelSoft p-2">
-                {selected.equity_curve_json?.length ? (
-                  <EquityMiniChart points={selected.equity_curve_json} />
-                ) : (
-                  <div className="text-sm text-muted">No equity points yet.</div>
-                )}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    className="rounded-lg bg-accent text-white px-3 py-2 text-sm disabled:opacity-50"
+                    onClick={() => void runStrategy(strategy.key)}
+                    disabled={Boolean(runningByStrategy[strategy.key] || clearingByStrategy[strategy.key])}
+                  >
+                    {runningByStrategy[strategy.key] ? 'Starting...' : 'Run strategy'}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-line bg-panel px-3 py-2 text-sm disabled:opacity-50"
+                    onClick={() => activeRow && void stopStrategy(strategy.key, activeRow.id)}
+                    disabled={!activeRow || Boolean(stoppingByStrategy[strategy.key] || clearingByStrategy[strategy.key])}
+                  >
+                    {stoppingByStrategy[strategy.key] ? 'Stopping...' : 'Stop strategy'}
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-lg border border-line bg-panel px-3 py-2 text-sm disabled:opacity-50"
+                    onClick={() => void clearStrategyHistory(strategy.key)}
+                    disabled={Boolean(clearingByStrategy[strategy.key])}
+                  >
+                    {clearingByStrategy[strategy.key] ? 'Clearing...' : 'Clear history'}
+                  </button>
+                </div>
               </div>
 
-              <div className="flex gap-2">
-                <a
-                  className="rounded-lg border border-line bg-panel px-3 py-1 text-sm"
-                  href={`${apiBase}/api/backtests/${selected.id}/export?fmt=json`}
-                  target="_blank"
-                >
-                  Export JSON
-                </a>
-                <a
-                  className="rounded-lg border border-line bg-panel px-3 py-1 text-sm"
-                  href={`${apiBase}/api/backtests/${selected.id}/export?fmt=csv`}
-                  target="_blank"
-                >
-                  Export CSV
-                </a>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                <div className="rounded-lg border border-line bg-panelSoft p-3">
+                  <div className="text-xs uppercase text-muted">Status</div>
+                  <div className={`text-lg font-semibold ${statusClass(latestRow?.status || null)}`}>
+                    {latestRow?.status || 'no history'}
+                  </div>
+                </div>
+                <div className="rounded-lg border border-line bg-panelSoft p-3">
+                  <div className="text-xs uppercase text-muted">Trades</div>
+                  <div className="text-lg font-semibold">{metricText(baseMetrics.trades)}</div>
+                </div>
+                <div className="rounded-lg border border-line bg-panelSoft p-3">
+                  <div className="text-xs uppercase text-muted">PF</div>
+                  <div className="text-lg font-semibold">{metricText(baseMetrics.profit_factor, (num) => num.toFixed(2))}</div>
+                </div>
+                <div className="rounded-lg border border-line bg-panelSoft p-3">
+                  <div className="text-xs uppercase text-muted">Winrate</div>
+                  <div className="text-lg font-semibold">{metricText(baseMetrics.winrate, (num) => `${(num * 100).toFixed(1)}%`)}</div>
+                </div>
+                <div className="rounded-lg border border-line bg-panelSoft p-3">
+                  <div className="text-xs uppercase text-muted">Max DD</div>
+                  <div className="text-lg font-semibold">
+                    {metricText(baseMetrics.max_drawdown_pct, (num) => `${num.toFixed(2)}%`)}
+                  </div>
+                </div>
               </div>
 
-              <div className="rounded-lg border border-line bg-panelSoft p-2">
-                <div className="text-xs text-muted mb-1">Assumptions / Stress metrics</div>
-                <pre className="text-xs whitespace-pre-wrap font-mono">
-                  {JSON.stringify(
-                    {
-                      assumptions: selected.metrics_json?.assumptions,
-                      base: selected.metrics_json?.base || selected.metrics_json,
-                      stress_1_5x: selected.metrics_json?.stress_1_5x,
-                      stress_2_0x: selected.metrics_json?.stress_2_0x,
-                      data_availability: selected.metrics_json?.data_availability
-                    },
-                    null,
-                    2
+              <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-4">
+                <div className="rounded-lg border border-line bg-panelSoft p-3">
+                  <div className="text-xs text-muted mb-2">Equity curve</div>
+                  {latestRow?.equity_curve_json?.length ? (
+                    <EquityMiniChart points={latestRow.equity_curve_json} />
+                  ) : (
+                    <div className="text-sm text-muted">No equity data yet.</div>
                   )}
-                </pre>
+                </div>
+
+                <div className="rounded-lg border border-line bg-panelSoft p-3">
+                  <div className="text-xs text-muted mb-2">Assumptions / Stress metrics</div>
+                  <pre className="text-xs whitespace-pre-wrap font-mono">
+                    {JSON.stringify(
+                      latestRow
+                        ? {
+                            assumptions: latestRow.metrics_json?.assumptions ?? null,
+                            base: latestRow.metrics_json?.base ?? latestRow.metrics_json ?? {},
+                            stress_1_5x: latestRow.metrics_json?.stress_1_5x ?? null,
+                            stress_2_0x: latestRow.metrics_json?.stress_2_0x ?? null
+                          }
+                        : null,
+                      null,
+                      2
+                    )}
+                  </pre>
+                </div>
               </div>
-            </div>
-          ) : null}
-        </div>
+            </section>
+          )
+        })}
       </div>
     </div>
   )

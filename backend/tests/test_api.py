@@ -384,6 +384,73 @@ def test_backtest_batch_stats_endpoint_aggregates_metrics(client, auth_header, d
     assert by_strategy["StrategyTrendRetrace70"]["status"] == "missing"
 
 
+def test_clear_backtests_for_strategy_deletes_history_and_revokes_active_task(
+    client, auth_header, db_session, monkeypatch
+):
+    now = datetime.now(timezone.utc)
+    rows = [
+        Backtest(
+            strategy="StrategyBreakoutRetest",
+            universe_json=[],
+            start_ts=now - timedelta(days=30),
+            end_ts=now,
+            params_json={"celery_task_id": "task-active"},
+            metrics_json={},
+            equity_curve_json=[],
+            status="running",
+            created_at=now - timedelta(minutes=2),
+        ),
+        Backtest(
+            strategy="StrategyBreakoutRetest",
+            universe_json=[],
+            start_ts=now - timedelta(days=60),
+            end_ts=now - timedelta(days=30),
+            params_json={},
+            metrics_json={},
+            equity_curve_json=[],
+            status="completed",
+            created_at=now - timedelta(minutes=5),
+        ),
+        Backtest(
+            strategy="MeanReversionHardStop",
+            universe_json=[],
+            start_ts=now - timedelta(days=10),
+            end_ts=now,
+            params_json={},
+            metrics_json={},
+            equity_curve_json=[],
+            status="completed",
+            created_at=now - timedelta(minutes=1),
+        ),
+    ]
+    db_session.add_all(rows)
+    db_session.commit()
+
+    revoked: dict[str, str] = {}
+
+    def _fake_revoke(task_id, terminate=False, signal=None):
+        revoked["task_id"] = task_id
+        revoked["terminate"] = str(terminate)
+        revoked["signal"] = str(signal)
+
+    monkeypatch.setattr(backtests_route.celery_app.control, "revoke", _fake_revoke)
+
+    resp = client.delete("/api/backtests/strategy/StrategyBreakoutRetest", headers=auth_header)
+    assert resp.status_code == 200
+    payload = resp.json()
+
+    assert payload["strategy"] == "StrategyBreakoutRetest"
+    assert payload["deleted"] == 2
+    assert payload["revoked"] == 1
+    assert revoked["task_id"] == "task-active"
+    assert revoked["terminate"] == "True"
+    assert revoked["signal"] == "SIGTERM"
+
+    remaining = db_session.query(Backtest).all()
+    assert len(remaining) == 1
+    assert remaining[0].strategy == "MeanReversionHardStop"
+
+
 def test_reset_paper_state_clears_trading_tables_and_sets_limit(client, auth_header, db_session):
     now = datetime.now(timezone.utc)
     instrument = Instrument(

@@ -3,13 +3,6 @@
 import { useEffect, useState } from 'react'
 
 import { apiFetch } from '@/lib/api'
-import {
-  type BaseStrategy,
-  BUILTIN_STRATEGY_OPTIONS,
-  parseStrategyPresets,
-  strategyLabel,
-  type StrategyPreset
-} from '@/lib/strategies'
 
 type ScalarSettingValue = string | number | boolean
 
@@ -81,54 +74,8 @@ export default function SettingsPage() {
   const [liveConfirmationText, setLiveConfirmationText] = useState('')
   const [coinbaseKey, setCoinbaseKey] = useState('')
   const [coinbaseSecret, setCoinbaseSecret] = useState('')
-  const [newPresetName, setNewPresetName] = useState('')
-  const [newPresetBaseStrategy, setNewPresetBaseStrategy] = useState<BaseStrategy>('StrategyBreakoutRetest')
   const [paperLimitUsd, setPaperLimitUsd] = useState('10000')
   const [resettingPaper, setResettingPaper] = useState(false)
-
-  const strategyPresets = parseStrategyPresets(settings?.strategy_params_json?.strategy_presets)
-
-  function setStrategyPresets(presets: StrategyPreset[]) {
-    setSettings((prev) => {
-      if (!prev) return prev
-      return {
-        ...prev,
-        strategy_params_json: {
-          ...prev.strategy_params_json,
-          strategy_presets: presets
-        }
-      }
-    })
-  }
-
-  function addStrategyPreset() {
-    const name = newPresetName.trim()
-    if (!name) {
-      setError('Preset name is required')
-      return
-    }
-    if (strategyPresets.some((preset) => preset.name.toLowerCase() === name.toLowerCase())) {
-      setError('Preset with this name already exists')
-      return
-    }
-
-    setError(null)
-    setSuccess(null)
-    setStrategyPresets([
-      ...strategyPresets,
-      {
-        name,
-        base_strategy: newPresetBaseStrategy
-      }
-    ])
-    setNewPresetName('')
-  }
-
-  function removeStrategyPreset(name: string) {
-    setError(null)
-    setSuccess(null)
-    setStrategyPresets(strategyPresets.filter((preset) => preset.name !== name))
-  }
 
   function updateStrategyParam(key: string, value: string) {
     setSettings((prev) => {
@@ -261,9 +208,8 @@ export default function SettingsPage() {
       </div>
 
       <div className="card p-3 text-sm">
-        Strategy execution now uses embedded per-strategy profiles from backend code (`strategies/profiles.py`).
-        Optional runtime overrides can be passed per strategy via `strategy_params_json.strategy_overrides`.
-        Fields below for Risk/Strategy/Fees are mostly legacy and kept for compatibility.
+        Backtests now run only through the 4 fixed strategies on the Backtests page. They are independent from each
+        other and do not use `Risk params (legacy)` or `Strategy params / Fees (legacy)` below.
       </div>
 
       {error ? <div className="card p-3 text-bad text-sm whitespace-pre-wrap">{error}</div> : null}
@@ -411,71 +357,6 @@ export default function SettingsPage() {
           <div className="pt-2 border-t border-line" />
           <div className="text-xs uppercase tracking-wide text-muted">TrendRetrace70</div>
           {TREND_RETRACE_70_KEYS.map((key) => renderStrategyParamInput(key))}
-
-          <div className="pt-2 border-t border-line" />
-          <div className="text-xs uppercase tracking-wide text-muted">Strategy presets (for Backtests)</div>
-          <p className="text-xs text-muted">
-            Add custom strategy entries for the Backtests dropdown. Each preset uses one built-in strategy engine.
-          </p>
-
-          <div className="grid grid-cols-1 md:grid-cols-[1fr_220px_auto] gap-2">
-            <input
-              className="rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm"
-              value={newPresetName}
-              onChange={(e) => setNewPresetName(e.target.value)}
-              placeholder="Preset name (e.g. Breakout Conservative)"
-            />
-            <select
-              className="rounded-lg border border-line bg-panelSoft px-2 py-1 text-sm"
-              value={newPresetBaseStrategy}
-              onChange={(e) => setNewPresetBaseStrategy(e.target.value as BaseStrategy)}
-            >
-              {BUILTIN_STRATEGY_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="rounded-lg bg-accent text-white px-3 py-1 text-sm"
-              onClick={addStrategyPreset}
-            >
-              Add
-            </button>
-          </div>
-
-          {strategyPresets.length ? (
-            <div className="space-y-2">
-              {strategyPresets.map((preset) => (
-                <div
-                  key={preset.name.toLowerCase()}
-                  className="rounded-lg border border-line bg-panelSoft p-2 flex items-center justify-between gap-2"
-                >
-                  <div>
-                    <div className="text-sm font-medium">{preset.name}</div>
-                    <div className="text-xs text-muted">{strategyLabel(preset.base_strategy)}</div>
-                    {preset.backtest_params ? (
-                      <div className="text-xs text-muted">
-                        min_cov: {preset.backtest_params.history_min_coverage_ratio ?? '-'} | target_cov:{' '}
-                        {preset.backtest_params.history_target_coverage_ratio ?? '-'} | tickers:{' '}
-                        {preset.backtest_params.input_tickers?.length ?? 0}
-                      </div>
-                    ) : null}
-                  </div>
-                  <button
-                    type="button"
-                    className="rounded-lg border border-line bg-panel px-2 py-1 text-xs"
-                    onClick={() => removeStrategyPreset(preset.name)}
-                  >
-                    Remove
-                  </button>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="text-xs text-muted">No presets yet.</div>
-          )}
 
           {otherStrategyKeys.length ? (
             <>

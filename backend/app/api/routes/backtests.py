@@ -282,6 +282,36 @@ def backtest_history_readiness(
     return BacktestHistoryReadinessOut.model_validate(readiness)
 
 
+@router.delete("/strategy/{strategy_name}")
+def clear_backtests_for_strategy(
+    strategy_name: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    strategy = str(strategy_name or "").strip()
+    if strategy not in ALL_BACKTEST_STRATEGIES:
+        raise HTTPException(status_code=400, detail=f"Unsupported strategy: {strategy}")
+
+    rows = db.scalars(select(Backtest).where(Backtest.strategy == strategy)).all()
+    revoked = 0
+    deleted = 0
+
+    for row in rows:
+        params = row.params_json if isinstance(row.params_json, dict) else {}
+        task_id = str(params.get("celery_task_id") or "").strip()
+        if task_id and row.status not in {"completed", "failed", "cancelled"}:
+            try:
+                celery_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+                revoked += 1
+            except Exception:
+                pass
+        db.delete(row)
+        deleted += 1
+
+    db.commit()
+    return {"strategy": strategy, "deleted": deleted, "revoked": revoked}
+
+
 @router.get("/batches/{batch_id}/stats", response_model=BacktestBatchStatsOut)
 def get_backtest_batch_stats(
     batch_id: str,
