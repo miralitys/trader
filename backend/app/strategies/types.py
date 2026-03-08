@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-
-
 @dataclass
 class CandleData:
     ts: datetime
@@ -25,3 +23,8 @@ class SignalPlan:
     confidence: float
     reason: str
     meta: dict
+    symbol: str | None = None
+    takes: list[float] | None = None
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+    status: str = "active"

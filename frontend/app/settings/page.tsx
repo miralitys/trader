@@ -23,10 +23,39 @@ type MessageResponse = {
   message: string
 }
 
-const GENERAL_STRATEGY_KEYS = ['ema200_filter_1h', 'atr_threshold_pct_1h', 'confirm_15m', 'trade_only_strategy']
-const BREAKOUT_STRATEGY_KEYS = ['breakout_lookback', 'breakout_retest_k_atr']
-const PULLBACK_STRATEGY_KEYS = ['pullback_rsi_threshold']
+const GENERAL_STRATEGY_KEYS = [
+  'trade_only_strategy',
+  'strategy_signal_cooldown_minutes'
+]
+const BREAKOUT_STRATEGY_KEYS = [
+  'br_ema200_filter_1h',
+  'br_atr_threshold_pct_1h',
+  'br_confirm_15m',
+  'br_lookback_n',
+  'br_atr_period',
+  'br_retest_atr_k',
+  'br_stop_atr_mult',
+  'br_tp1_rr',
+  'br_tp2_rr',
+  'br_trail_ema_period',
+  'br_signal_ttl_minutes'
+]
+const PULLBACK_STRATEGY_KEYS = [
+  'pt_ema200_filter_1h',
+  'pt_atr_threshold_pct_1h',
+  'pt_confirm_15m',
+  'pt_ema_fast',
+  'pt_ema_slow',
+  'pt_rsi_period',
+  'pt_rsi_threshold',
+  'pt_stop_lookback',
+  'pt_tp_rr',
+  'pt_signal_ttl_minutes'
+]
 const MR_STRATEGY_KEYS = [
+  'mr_ema200_filter_1h',
+  'mr_atr_threshold_pct_1h',
+  'mr_confirm_15m',
   'mr_bb_period',
   'mr_bb_std',
   'mr_rsi_period',
@@ -35,23 +64,29 @@ const MR_STRATEGY_KEYS = [
   'mr_lookback_stop',
   'mr_stop_atr_buffer',
   'mr_max_stop_pct',
-  'mr_tp_rr'
+  'mr_tp_rr',
+  'mr_signal_ttl_minutes'
 ]
 const TREND_RETRACE_70_KEYS = [
-  'tr70_ema_fast_period',
-  'tr70_ema_mid_period',
-  'tr70_ema_slow_period',
-  'tr70_pullback_lookback',
-  'tr70_pullback_depth_pct',
-  'tr70_reclaim_buffer_pct',
-  'tr70_rsi_period',
-  'tr70_rsi_min',
-  'tr70_rsi_max',
-  'tr70_stop_atr_mult',
-  'tr70_min_stop_pct',
-  'tr70_max_stop_pct',
-  'tr70_tp_rr',
-  'tr70_min_volume_ratio'
+  'tr_ema200_filter_1h',
+  'tr_atr_threshold_pct_1h',
+  'tr_confirm_15m',
+  'tr_pivot_left_right',
+  'tr_wave_tf',
+  'tr_min_impulse_atr',
+  'tr_retrace_target',
+  'tr_retrace_zone_low',
+  'tr_retrace_zone_high',
+  'tr_retrace_tolerance',
+  'tr_trigger_mode',
+  'tr_trigger_ema_period',
+  'tr_trigger_lookback',
+  'tr_stop_lookback',
+  'tr_stop_atr_buffer',
+  'tr_max_stop_pct',
+  'tr_tp2_rr',
+  'tr_signal_ttl_minutes',
+  'tr_safety_ema_period'
 ]
 
 const RESERVED_STRATEGY_KEYS = new Set([

@@ -14,7 +14,7 @@ from app.models.entities import Setting
 from app.services.backtest_service import BACKTEST_STALE_TIMEOUT_MINUTES, fail_stale_backtests, run_backtest
 from app.services.coinbase import CoinbaseCredentials
 from app.services.market_data import backfill_history, ingest_candles, sync_instruments
-from app.services.strategy_runner import run_strategy_cycle
+from app.services.strategy_runner import expire_stale_signals, run_strategy_cycle
 from app.services.universe import recompute_universe
 
 
@@ -95,6 +95,17 @@ def strategy_runner_task() -> dict:
             if not setting:
                 return {"status": "skipped", "reason": "no_settings"}
             return run_strategy_cycle(db, setting)
+        finally:
+            db.close()
+
+
+@shared_task(name="app.workers.tasks.signal_expiry_task")
+def signal_expiry_task() -> dict:
+    with _timed("signal_expiry"):
+        db = SessionLocal()
+        try:
+            expired = expire_stale_signals(db)
+            return {"expired": expired}
         finally:
             db.close()
 

@@ -72,6 +72,7 @@ def _place_live_entry_order(
             "signal_id": signal.id,
             "stop": signal.stop,
             "take": signal.take,
+            "take_targets": signal.meta_json.get("take"),
             "strategy": signal.strategy,
             "response": response,
         },
@@ -135,6 +136,7 @@ def _sync_live_fills(db: Session, credentials: CoinbaseCredentials) -> None:
                         meta_json={
                             "stop": order.raw_json.get("stop"),
                             "take": order.raw_json.get("take"),
+                            "take_targets": order.raw_json.get("take_targets"),
                             "strategy": order.raw_json.get("strategy"),
                         },
                     )

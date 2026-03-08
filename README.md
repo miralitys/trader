@@ -194,6 +194,42 @@ No DCA / no martingale.
 - `mr_max_stop_pct` (default `0.03`)
 - `mr_tp_rr` (default `1.2`)
 
+### StrategyTrendRetrace70
+- Работает только внутри обязательного 1H regime filter (`close > EMA200`, `slope >= 0`, `ATR% < threshold`)
+- Ищет глубокий откат около `70%` от последней подтвержденной импульсной волны `A -> B` внутри тренда
+- Волна `A -> B` определяется формально через fractal pivots на `15m`:
+  - `pivot_high(i) = max(high[i-L..i+L])`
+  - `pivot_low(i) = min(low[i-L..i+L])`
+  - pivot подтверждается только после появления `i+L` баров, поэтому look-ahead отсутствует
+- Для LONG-only используется последняя валидная связка `A = pivot_low`, `B = следующий pivot_high`, где импульс `B - A` не меньше `tr_min_impulse_atr * ATR_15m`
+- Setup (5m): текущий close находится в зоне retracement `[0.62, 0.78]` или достаточно близко к `0.70`
+- Safety guard: текущий `close_5m` не должен быть ниже `EMA200_5m`
+- Trigger (5m): по умолчанию close пересекает вверх `EMA20_5m`; опционально можно использовать `break_high` последних свечей
+- Entry: trigger-close последней закрытой 5m свечи
+- Stop: подтвержденный retrace pivot low после `B`, если он уже сформирован, иначе минимум последних `tr_stop_lookback` свечей 5m, затем `- tr_stop_atr_buffer * ATR_5m`
+- Ограничение риска: если `(entry - stop) / entry > tr_max_stop_pct`, сделка пропускается
+- TP: два уровня `TP1/TP2` на основе `1R/2R` и ретеста `B`
+- Без DCA и без martingale; риск считается только от одного входа и жесткого стопа
+- Исполнение остается консервативным: `taker-only + slippage`, вход в paper/backtest только со следующей свечи после сигнала
+
+Параметры `StrategyTrendRetrace70`:
+- `tr_pivot_left_right` (default `3`)
+- `tr_wave_tf` (default `"15m"`)
+- `tr_min_impulse_atr` (default `1.5`)
+- `tr_retrace_target` (default `0.70`)
+- `tr_retrace_zone_low` (default `0.62`)
+- `tr_retrace_zone_high` (default `0.78`)
+- `tr_retrace_tolerance` (default `0.05`)
+- `tr_trigger_mode` (default `"ema20"`)
+- `tr_trigger_ema_period` (default `20`)
+- `tr_trigger_lookback` (default `6`)
+- `tr_stop_lookback` (default `12`)
+- `tr_stop_atr_buffer` (default `0.2`)
+- `tr_max_stop_pct` (default `0.04`)
+- `tr_tp2_rr` (default `2.0`)
+- `tr_signal_ttl_minutes` (default `180`)
+- `tr_safety_ema_period` (default `200`)
+
 ## Риск-менеджмент (default)
 - Используются per-strategy профили из `backend/app/strategies/profiles.py`:
   - `risk` (лимиты/позиционирование),

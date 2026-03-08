@@ -6,11 +6,11 @@ def test_apply_strategy_overrides_only_for_selected_strategy():
     strategy_params = {
         "strategy_overrides": {
             "StrategyTrendRetrace70": {
-                "signal": {"tr70_tp_rr": 3.2},
+                "signal": {"tr_tp2_rr": 3.2},
                 "risk": {"max_hold_hours": 24},
             },
             "StrategyBreakoutRetest": {
-                "signal": {"breakout_lookback": 55},
+                "signal": {"br_lookback_n": 55},
             },
         }
     }
@@ -26,31 +26,31 @@ def test_apply_strategy_overrides_only_for_selected_strategy():
         "StrategyBreakoutRetest",
     )
 
-    assert trend_profile["signal"]["tr70_tp_rr"] == 3.2
+    assert trend_profile["signal"]["tr_tp2_rr"] == 3.2
     assert trend_profile["risk"]["max_hold_hours"] == 24
-    assert "breakout_lookback" not in trend_profile["signal"]
+    assert "br_lookback_n" not in trend_profile["signal"]
 
-    assert breakout_profile["signal"]["breakout_lookback"] == 55
-    assert "tr70_tp_rr" not in breakout_profile["signal"]
+    assert breakout_profile["signal"]["br_lookback_n"] == 55
+    assert "tr_tp2_rr" not in breakout_profile["signal"]
 
 
 def test_merge_strategy_overrides_keeps_other_strategies_unchanged():
     existing = {
         "StrategyTrendRetrace70": {
-            "signal": {"tr70_tp_rr": 2.1, "tr70_min_volume_ratio": 0.8},
+            "signal": {"tr_tp2_rr": 2.0, "tr_retrace_tolerance": 0.05},
         },
         "StrategyBreakoutRetest": {
-            "signal": {"breakout_lookback": 20},
+            "signal": {"br_lookback_n": 20},
         },
     }
     incoming = {
         "StrategyTrendRetrace70": {
-            "signal": {"tr70_tp_rr": 2.8},
+            "signal": {"tr_tp2_rr": 2.8},
         }
     }
 
     merged = _merge_strategy_overrides(existing, incoming)
 
-    assert merged["StrategyTrendRetrace70"]["signal"]["tr70_tp_rr"] == 2.8
-    assert merged["StrategyTrendRetrace70"]["signal"]["tr70_min_volume_ratio"] == 0.8
-    assert merged["StrategyBreakoutRetest"]["signal"]["breakout_lookback"] == 20
+    assert merged["StrategyTrendRetrace70"]["signal"]["tr_tp2_rr"] == 2.8
+    assert merged["StrategyTrendRetrace70"]["signal"]["tr_retrace_tolerance"] == 0.05
+    assert merged["StrategyBreakoutRetest"]["signal"]["br_lookback_n"] == 20

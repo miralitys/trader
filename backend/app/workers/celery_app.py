@@ -33,6 +33,10 @@ celery_app.conf.beat_schedule = {
         "task": "app.workers.tasks.strategy_runner_task",
         "schedule": 300.0,
     },
+    "expire-signals-every-1-min": {
+        "task": "app.workers.tasks.signal_expiry_task",
+        "schedule": 60.0,
+    },
     "paper-execution-every-1-min": {
         "task": "app.workers.tasks.paper_execution_task",
         "schedule": 60.0,

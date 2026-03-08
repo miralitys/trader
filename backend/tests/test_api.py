@@ -29,6 +29,12 @@ def test_settings_get_put(client, auth_header):
     before = client.get("/api/settings", headers=auth_header)
     assert before.status_code == 200
     assert before.json()["paper_enabled"] is True
+    assert before.json()["strategy_params_json"]["strategy_signal_cooldown_minutes"] == 30
+    assert before.json()["strategy_params_json"]["strategy_priority"][:3] == [
+        "StrategyBreakoutRetest",
+        "StrategyPullbackToTrend",
+        "MeanReversionHardStop",
+    ]
 
     updated = client.put(
         "/api/settings",

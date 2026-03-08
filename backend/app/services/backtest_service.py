@@ -15,7 +15,7 @@ from app.strategies.breakout_retest import generate_breakout_retest_signal
 from app.strategies.indicators import atr, ema
 from app.strategies.mean_reversion_hard_stop import generate_mean_reversion_hard_stop_signal
 from app.strategies.profiles import DEFAULT_INITIAL_EQUITY, apply_strategy_overrides, get_strategy_profile
-from app.strategies.pullback_trend import generate_pullback_signal
+from app.strategies.pullback_to_trend import generate_pullback_to_trend_signal
 from app.strategies.trend_retrace_70 import generate_trend_retrace_70_signal
 from app.strategies.types import CandleData
 
@@ -136,6 +136,50 @@ def _to_bool(value: Any, default: bool = False) -> bool:
             return True
         if v in {"0", "false", "no", "off"}:
             return False
+    return default
+
+
+def _breakout_int_param(params: dict[str, Any], canonical: str, legacy: str, default: int) -> int:
+    if canonical in params:
+        return int(params.get(canonical) or default)
+    if legacy in params:
+        return int(params.get(legacy) or default)
+    return default
+
+
+def _breakout_float_param(params: dict[str, Any], canonical: str, legacy: str, default: float) -> float:
+    if canonical in params:
+        return _to_float(params.get(canonical), default)
+    if legacy in params:
+        return _to_float(params.get(legacy), default)
+    return default
+
+
+def _pullback_int_param(params: dict[str, Any], canonical: str, default: int) -> int:
+    return int(params.get(canonical) or default) if canonical in params else default
+
+
+def _pullback_float_param(params: dict[str, Any], canonical: str, legacy: str, default: float) -> float:
+    if canonical in params:
+        return _to_float(params.get(canonical), default)
+    if legacy in params:
+        return _to_float(params.get(legacy), default)
+    return default
+
+
+def _strategy_bool_param(params: dict[str, Any], canonical: str, legacy: str, default: bool) -> bool:
+    if canonical in params:
+        return _to_bool(params.get(canonical), default)
+    if legacy in params:
+        return _to_bool(params.get(legacy), default)
+    return default
+
+
+def _strategy_float_param(params: dict[str, Any], canonical: str, legacy: str, default: float) -> float:
+    if canonical in params:
+        return _to_float(params.get(canonical), default)
+    if legacy in params:
+        return _to_float(params.get(legacy), default)
     return default
 
 
@@ -751,61 +795,116 @@ def _simulate_raw_trades_for_symbol(
 
         signal = None
         if strategy == "StrategyPullbackToTrend":
-            signal = generate_pullback_signal(
-                window,
-                rsi_threshold=_to_float(params.get("pullback_rsi_threshold"), 45.0),
+            while hourly_idx + 1 < len(hourly) and hourly[hourly_idx + 1].ts <= window[-1].ts:
+                hourly_idx += 1
+            regime_window = hourly[: hourly_idx + 1] if hourly_idx >= 0 else []
+            regime_ok, regime_meta = _regime_filter_1h(
+                regime_window,
+                atr_threshold_pct=_strategy_float_param(params, "pt_atr_threshold_pct_1h", "atr_threshold_pct_1h", 5.0),
             )
+            if regime_ok and _strategy_bool_param(params, "pt_ema200_filter_1h", "ema200_filter_1h", True):
+                signal = generate_pullback_to_trend_signal(
+                    window,
+                    context={
+                        "regime_state": {"ok": True, **regime_meta},
+                        "params": {
+                            "pt_ema_fast": _pullback_int_param(params, "pt_ema_fast", 20),
+                            "pt_ema_slow": _pullback_int_param(params, "pt_ema_slow", 50),
+                            "pt_rsi_period": _pullback_int_param(params, "pt_rsi_period", 14),
+                            "pt_rsi_threshold": _pullback_float_param(params, "pt_rsi_threshold", "pullback_rsi_threshold", 45.0),
+                            "pt_stop_lookback": _pullback_int_param(params, "pt_stop_lookback", 10),
+                            "pt_tp_rr": _pullback_float_param(params, "pt_tp_rr", "pt_tp_rr", 1.2),
+                            "pt_signal_ttl_minutes": _pullback_int_param(params, "pt_signal_ttl_minutes", 60),
+                        },
+                    },
+                )
+        elif strategy == "StrategyBreakoutRetest":
+            while hourly_idx + 1 < len(hourly) and hourly[hourly_idx + 1].ts <= window[-1].ts:
+                hourly_idx += 1
+            regime_window = hourly[: hourly_idx + 1] if hourly_idx >= 0 else []
+            regime_ok, regime_meta = _regime_filter_1h(
+                regime_window,
+                atr_threshold_pct=_strategy_float_param(params, "br_atr_threshold_pct_1h", "atr_threshold_pct_1h", 5.0),
+            )
+            if regime_ok and _strategy_bool_param(params, "br_ema200_filter_1h", "ema200_filter_1h", True):
+                signal = generate_breakout_retest_signal(
+                    window,
+                    context={
+                        "regime_state": {"ok": True, **regime_meta},
+                        "params": {
+                            "br_lookback_n": _breakout_int_param(params, "br_lookback_n", "breakout_lookback", 20),
+                            "br_atr_period": _breakout_int_param(params, "br_atr_period", "br_atr_period", 14),
+                            "br_retest_atr_k": _breakout_float_param(params, "br_retest_atr_k", "breakout_retest_k_atr", 0.3),
+                            "br_stop_atr_mult": _breakout_float_param(params, "br_stop_atr_mult", "breakout_stop_atr_mult", 1.0),
+                            "br_tp1_rr": _breakout_float_param(params, "br_tp1_rr", "br_tp1_rr", 1.0),
+                            "br_tp2_rr": _breakout_float_param(params, "br_tp2_rr", "breakout_tp_rr", 2.0),
+                            "br_trail_ema_period": _breakout_int_param(params, "br_trail_ema_period", "br_trail_ema_period", 20),
+                            "br_signal_ttl_minutes": _breakout_int_param(params, "br_signal_ttl_minutes", "br_signal_ttl_minutes", 60),
+                            "breakout_min_volume_ratio": _to_float(params.get("breakout_min_volume_ratio"), 0.0),
+                            "breakout_min_confidence": _to_float(params.get("breakout_min_confidence"), 0.0),
+                        },
+                    },
+                )
         elif strategy == "MeanReversionHardStop":
             while hourly_idx + 1 < len(hourly) and hourly[hourly_idx + 1].ts <= window[-1].ts:
                 hourly_idx += 1
             regime_window = hourly[: hourly_idx + 1] if hourly_idx >= 0 else []
             regime_ok, regime_meta = _regime_filter_1h(
                 regime_window,
-                atr_threshold_pct=_to_float(params.get("atr_threshold_pct_1h"), 4.0),
+                atr_threshold_pct=_strategy_float_param(params, "mr_atr_threshold_pct_1h", "atr_threshold_pct_1h", 3.5),
             )
-            if regime_ok:
+            if regime_ok and _strategy_bool_param(params, "mr_ema200_filter_1h", "ema200_filter_1h", True):
                 signal = generate_mean_reversion_hard_stop_signal(
                     window,
-                    bb_period=int(params.get("mr_bb_period", 20)),
-                    bb_std=_to_float(params.get("mr_bb_std"), 2.0),
-                    rsi_period=int(params.get("mr_rsi_period", 14)),
-                    rsi_entry_threshold=_to_float(params.get("mr_rsi_entry_threshold"), 30.0),
-                    safety_ema_period=int(params.get("mr_safety_ema_period", 200)),
-                    lookback_stop=int(params.get("mr_lookback_stop", 15)),
-                    stop_atr_buffer=_to_float(params.get("mr_stop_atr_buffer"), 0.2),
-                    max_stop_pct=_to_float(params.get("mr_max_stop_pct"), 0.03),
-                    tp_rr=_to_float(params.get("mr_tp_rr"), 1.2),
-                    regime_meta=regime_meta,
+                    context={
+                        "regime_state": {"ok": True, **regime_meta},
+                        "params": {
+                            "mr_bb_period": int(params.get("mr_bb_period", 20)),
+                            "mr_bb_std": _to_float(params.get("mr_bb_std"), 2.0),
+                            "mr_rsi_period": int(params.get("mr_rsi_period", 14)),
+                            "mr_rsi_entry_threshold": _to_float(params.get("mr_rsi_entry_threshold"), 30.0),
+                            "mr_safety_ema_period": int(params.get("mr_safety_ema_period", 200)),
+                            "mr_lookback_stop": int(params.get("mr_lookback_stop", 15)),
+                            "mr_stop_atr_buffer": _to_float(params.get("mr_stop_atr_buffer"), 0.2),
+                            "mr_max_stop_pct": _to_float(params.get("mr_max_stop_pct"), 0.03),
+                            "mr_tp_rr": _to_float(params.get("mr_tp_rr"), 1.2),
+                            "mr_signal_ttl_minutes": int(params.get("mr_signal_ttl_minutes", 60)),
+                        },
+                    },
                 )
         elif strategy == "StrategyTrendRetrace70":
-            signal = generate_trend_retrace_70_signal(
-                window,
-                ema_fast_period=int(params.get("tr70_ema_fast_period", 20)),
-                ema_mid_period=int(params.get("tr70_ema_mid_period", 50)),
-                ema_slow_period=int(params.get("tr70_ema_slow_period", 200)),
-                pullback_lookback=int(params.get("tr70_pullback_lookback", 10)),
-                pullback_depth_pct=_to_float(params.get("tr70_pullback_depth_pct"), 0.35),
-                reclaim_buffer_pct=_to_float(params.get("tr70_reclaim_buffer_pct"), 0.05),
-                rsi_period=int(params.get("tr70_rsi_period", 14)),
-                rsi_min=_to_float(params.get("tr70_rsi_min"), 42.0),
-                rsi_max=_to_float(params.get("tr70_rsi_max"), 62.0),
-                stop_atr_mult=_to_float(params.get("tr70_stop_atr_mult"), 0.7),
-                min_stop_pct=_to_float(params.get("tr70_min_stop_pct"), 0.7),
-                max_stop_pct=_to_float(params.get("tr70_max_stop_pct"), 1.8),
-                tp_rr=_to_float(params.get("tr70_tp_rr"), 2.1),
-                min_volume_ratio=_to_float(params.get("tr70_min_volume_ratio"), 0.8),
+            while hourly_idx + 1 < len(hourly) and hourly[hourly_idx + 1].ts <= window[-1].ts:
+                hourly_idx += 1
+            regime_window = hourly[: hourly_idx + 1] if hourly_idx >= 0 else []
+            regime_ok, regime_meta = _regime_filter_1h(
+                regime_window,
+                atr_threshold_pct=_strategy_float_param(params, "tr_atr_threshold_pct_1h", "atr_threshold_pct_1h", 4.5),
             )
-        else:
-            signal = generate_breakout_retest_signal(
-                window,
-                lookback=int(params.get("breakout_lookback", 20)),
-                retest_k_atr=_to_float(params.get("breakout_retest_k_atr"), 0.3),
-                stop_atr_mult=_to_float(params.get("breakout_stop_atr_mult"), 1.0),
-                tp_rr=_to_float(params.get("breakout_tp_rr"), 2.0),
-                min_volume_ratio=_to_float(params.get("breakout_min_volume_ratio"), 0.0),
-                min_confidence=_to_float(params.get("breakout_min_confidence"), 0.0),
-            )
-
+            if regime_ok and _strategy_bool_param(params, "tr_ema200_filter_1h", "ema200_filter_1h", True):
+                signal = generate_trend_retrace_70_signal(
+                    window,
+                    context={
+                        "regime_state": {"ok": True, **regime_meta},
+                        "params": {
+                            "tr_pivot_left_right": int(params.get("tr_pivot_left_right", 3)),
+                            "tr_wave_tf": params.get("tr_wave_tf", "15m"),
+                            "tr_min_impulse_atr": _to_float(params.get("tr_min_impulse_atr"), 1.5),
+                            "tr_retrace_target": _to_float(params.get("tr_retrace_target"), 0.70),
+                            "tr_retrace_zone_low": _to_float(params.get("tr_retrace_zone_low"), 0.62),
+                            "tr_retrace_zone_high": _to_float(params.get("tr_retrace_zone_high"), 0.78),
+                            "tr_retrace_tolerance": _to_float(params.get("tr_retrace_tolerance"), 0.05),
+                            "tr_trigger_mode": params.get("tr_trigger_mode", "ema20"),
+                            "tr_trigger_ema_period": int(params.get("tr_trigger_ema_period", 20)),
+                            "tr_trigger_lookback": int(params.get("tr_trigger_lookback", 6)),
+                            "tr_stop_lookback": int(params.get("tr_stop_lookback", 12)),
+                            "tr_stop_atr_buffer": _to_float(params.get("tr_stop_atr_buffer"), 0.2),
+                            "tr_max_stop_pct": _to_float(params.get("tr_max_stop_pct"), 0.04),
+                            "tr_tp2_rr": _to_float(params.get("tr_tp2_rr"), 2.0),
+                            "tr_signal_ttl_minutes": int(params.get("tr_signal_ttl_minutes", 180)),
+                            "tr_safety_ema_period": int(params.get("tr_safety_ema_period", 200)),
+                        },
+                    },
+                )
         if not signal:
             i += 1
             continue
@@ -925,10 +1024,10 @@ def _optimize_breakout_retest_2(
     best_details: dict[str, Any] = {}
 
     for (
-        breakout_lookback,
-        breakout_retest_k_atr,
-        breakout_stop_atr_mult,
-        breakout_tp_rr,
+        br_lookback_n,
+        br_retest_atr_k,
+        br_stop_atr_mult,
+        br_tp2_rr,
         breakout_min_volume_ratio,
         breakout_min_confidence,
         symbol_top_n,
@@ -948,10 +1047,11 @@ def _optimize_breakout_retest_2(
         candidate_params = strategy_params.copy()
         candidate_params.update(
             {
-                "breakout_lookback": breakout_lookback,
-                "breakout_retest_k_atr": breakout_retest_k_atr,
-                "breakout_stop_atr_mult": breakout_stop_atr_mult,
-                "breakout_tp_rr": breakout_tp_rr,
+                "br_lookback_n": br_lookback_n,
+                "br_retest_atr_k": br_retest_atr_k,
+                "br_stop_atr_mult": br_stop_atr_mult,
+                "br_tp1_rr": 1.0,
+                "br_tp2_rr": br_tp2_rr,
                 "breakout_min_volume_ratio": breakout_min_volume_ratio,
                 "breakout_min_confidence": breakout_min_confidence,
             }
@@ -1009,10 +1109,11 @@ def _optimize_breakout_retest_2(
             best_raw = raw_trades
             best_details = {
                 "config": {
-                    "breakout_lookback": breakout_lookback,
-                    "breakout_retest_k_atr": breakout_retest_k_atr,
-                    "breakout_stop_atr_mult": breakout_stop_atr_mult,
-                    "breakout_tp_rr": breakout_tp_rr,
+                    "br_lookback_n": br_lookback_n,
+                    "br_retest_atr_k": br_retest_atr_k,
+                    "br_stop_atr_mult": br_stop_atr_mult,
+                    "br_tp1_rr": 1.0,
+                    "br_tp2_rr": br_tp2_rr,
                     "breakout_min_volume_ratio": breakout_min_volume_ratio,
                     "breakout_min_confidence": breakout_min_confidence,
                     "breakout_symbol_top_n": len(candidate_symbols),
@@ -1355,10 +1456,14 @@ def run_backtest(db: Session, backtest_id: int) -> Backtest:
             params["strategy_profile_params_applied"] = {
                 key: strategy_params.get(key)
                 for key in (
-                    "breakout_lookback",
-                    "breakout_retest_k_atr",
-                    "breakout_stop_atr_mult",
-                    "breakout_tp_rr",
+                    "br_lookback_n",
+                    "br_atr_period",
+                    "br_retest_atr_k",
+                    "br_stop_atr_mult",
+                    "br_tp1_rr",
+                    "br_tp2_rr",
+                    "br_trail_ema_period",
+                    "br_signal_ttl_minutes",
                     "breakout_min_volume_ratio",
                     "breakout_min_confidence",
                     "breakout_symbol_top_n",

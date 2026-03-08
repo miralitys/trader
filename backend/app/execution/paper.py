@@ -427,10 +427,12 @@ def _fill_entry_order(db: Session, order: Order, signal: Signal) -> None:
             "signal_id": signal.id,
             "stop": signal.stop,
             "take": signal.take,
+            "take_targets": signal.meta_json.get("take"),
             "partial_tp": signal.meta_json.get("partial_tp"),
             "final_tp": signal.meta_json.get("final_tp", signal.take),
             "current_stop": signal.stop,
             "partial_taken": False,
+            "br_trail_ema_period": signal.meta_json.get("br_trail_ema_period"),
         },
     )
     db.add(trade)
@@ -702,16 +704,17 @@ def run_paper_execution_cycle(db: Session, setting: Setting) -> dict:
                 stop = float(meta.get("current_stop", stop))
 
         if strategy == "StrategyBreakoutRetest":
+            trail_ema_period = max(2, int(meta.get("br_trail_ema_period") or 20))
             recent = db.scalars(
                 select(Candle)
                 .where(Candle.instrument_id == instrument.id, Candle.timeframe == "5m")
                 .order_by(Candle.ts.desc())
-                .limit(20)
+                .limit(trail_ema_period)
             ).all()
-            if len(recent) >= 20:
+            if len(recent) >= trail_ema_period:
                 closes = [x.close for x in reversed(recent)]
                 ema20 = closes[0]
-                alpha = 2 / (20 + 1)
+                alpha = 2 / (trail_ema_period + 1)
                 for val in closes[1:]:
                     ema20 = (val - ema20) * alpha + ema20
                 trail_stop = max(stop, ema20)
