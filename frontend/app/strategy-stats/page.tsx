@@ -45,14 +45,35 @@ type BatchStatsOut = {
 }
 
 const ACTIVE_BATCH_STORAGE_KEY = 'trader:strategy-stats:active-batch-id'
+const STRATEGY_OVERRIDES_STORAGE_KEY = 'trader:strategy-stats:overrides-v1'
 const POLL_INTERVAL_MS = 15_000
 const AUTO_RETRY_DELAY_MS = 120_000
 const QUEUED_STUCK_MINUTES = 10
-const DEFAULT_COMMON_PARAMS = {
-  history_min_coverage_ratio: 0.5,
-  history_required_coverage_ratio: 0.5,
-  history_target_coverage_ratio: 0.7,
-  history_allow_degraded: true
+const DEFAULT_STRATEGY_OVERRIDES: Record<string, Record<string, unknown>> = {
+  StrategyBreakoutRetest: {
+    history_min_coverage_ratio: 0.5,
+    history_required_coverage_ratio: 0.5,
+    history_target_coverage_ratio: 0.7,
+    history_allow_degraded: true
+  },
+  StrategyPullbackToTrend: {
+    history_min_coverage_ratio: 0.5,
+    history_required_coverage_ratio: 0.5,
+    history_target_coverage_ratio: 0.7,
+    history_allow_degraded: true
+  },
+  MeanReversionHardStop: {
+    history_min_coverage_ratio: 0.5,
+    history_required_coverage_ratio: 0.5,
+    history_target_coverage_ratio: 0.7,
+    history_allow_degraded: true
+  },
+  StrategyTrendRetrace70: {
+    history_min_coverage_ratio: 0.5,
+    history_required_coverage_ratio: 0.5,
+    history_target_coverage_ratio: 0.7,
+    history_allow_degraded: true
+  }
 }
 
 const STRATEGY_ORDER: BaseStrategy[] = [
@@ -99,6 +120,12 @@ export default function StrategyStatsPage() {
   const [retrying, setRetrying] = useState(false)
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [strategyOverridesText, setStrategyOverridesText] = useState<Record<string, string>>({
+    StrategyBreakoutRetest: JSON.stringify(DEFAULT_STRATEGY_OVERRIDES.StrategyBreakoutRetest, null, 2),
+    StrategyPullbackToTrend: JSON.stringify(DEFAULT_STRATEGY_OVERRIDES.StrategyPullbackToTrend, null, 2),
+    MeanReversionHardStop: JSON.stringify(DEFAULT_STRATEGY_OVERRIDES.MeanReversionHardStop, null, 2),
+    StrategyTrendRetrace70: JSON.stringify(DEFAULT_STRATEGY_OVERRIDES.StrategyTrendRetrace70, null, 2)
+  })
 
   const pollInFlightRef = useRef(false)
   const retryInFlightRef = useRef(false)
@@ -106,15 +133,33 @@ export default function StrategyStatsPage() {
 
   const hasActiveBatch = Boolean(batchId)
 
+  function parsePerStrategyParams(strategies: string[]): Record<string, Record<string, unknown>> {
+    const out: Record<string, Record<string, unknown>> = {}
+    for (const strategy of strategies) {
+      const raw = (strategyOverridesText[strategy] || '').trim()
+      if (!raw) continue
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        throw new Error(`Invalid JSON overrides for ${strategyDisplayName(strategy)}`)
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        throw new Error(`Overrides for ${strategyDisplayName(strategy)} must be a JSON object`)
+      }
+      out[strategy] = parsed as Record<string, unknown>
+    }
+    return out
+  }
+
   async function runBatch(strategies?: string[]) {
+    const targetStrategies = strategies && strategies.length ? strategies : STRATEGY_ORDER
     const body: Record<string, unknown> = {
-      common_params: DEFAULT_COMMON_PARAMS
+      strategies: targetStrategies,
+      per_strategy_params: parsePerStrategyParams(targetStrategies)
     }
     if (batchId) {
       body.batch_id = batchId
-    }
-    if (strategies && strategies.length) {
-      body.strategies = strategies
     }
 
     const data = await apiFetch<BatchRunOut>('/api/backtests/run-all', {
@@ -199,7 +244,31 @@ export default function StrategyStatsPage() {
     if (stored?.trim()) {
       setBatchId(stored.trim())
     }
+    const rawOverrides = localStorage.getItem(STRATEGY_OVERRIDES_STORAGE_KEY)
+    if (rawOverrides?.trim()) {
+      try {
+        const parsed = JSON.parse(rawOverrides)
+        if (typeof parsed === 'object' && parsed !== null) {
+          setStrategyOverridesText((prev) => {
+            const next = { ...prev }
+            for (const strategy of STRATEGY_ORDER) {
+              const value = (parsed as Record<string, unknown>)[strategy]
+              if (typeof value === 'string' && value.trim()) {
+                next[strategy] = value
+              }
+            }
+            return next
+          })
+        }
+      } catch {
+        // Ignore invalid local value.
+      }
+    }
   }, [])
+
+  useEffect(() => {
+    localStorage.setItem(STRATEGY_OVERRIDES_STORAGE_KEY, JSON.stringify(strategyOverridesText))
+  }, [strategyOverridesText])
 
   useEffect(() => {
     if (!batchId) return
@@ -297,13 +366,47 @@ export default function StrategyStatsPage() {
       <div className="card p-3 text-sm space-y-1">
         <div><span className="text-muted">Batch ID:</span> {batchId || '-'}</div>
         <div>
-          <span className="text-muted">Coverage limits:</span> min 50% | required 50% | target 70%
-          {' '}| degraded fallback: on
-        </div>
-        <div>
           <span className="text-muted">Period:</span>{' '}
           {stats?.start_ts ? new Date(stats.start_ts).toLocaleString() : '-'} -{' '}
           {stats?.end_ts ? new Date(stats.end_ts).toLocaleString() : '-'}
+        </div>
+      </div>
+
+      <div className="card p-3 space-y-3">
+        <h2 className="font-semibold">Per-strategy params (independent)</h2>
+        <p className="text-xs text-muted">
+          Changes apply only to the selected strategy JSON. Other strategies are not affected.
+        </p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {STRATEGY_ORDER.map((strategy) => (
+            <div key={strategy} className="rounded-lg border border-line bg-panelSoft p-3 space-y-2">
+              <div className="text-sm font-medium">{strategyDisplayName(strategy)}</div>
+              <textarea
+                className="w-full h-28 rounded-lg border border-line bg-panel px-2 py-1 text-xs font-mono"
+                value={strategyOverridesText[strategy] || '{}'}
+                onChange={(e) =>
+                  setStrategyOverridesText((prev) => ({
+                    ...prev,
+                    [strategy]: e.target.value
+                  }))
+                }
+              />
+              <div className="flex justify-end">
+                <button
+                  type="button"
+                  className="rounded-lg border border-line bg-panel px-2 py-1 text-xs"
+                  onClick={() =>
+                    setStrategyOverridesText((prev) => ({
+                      ...prev,
+                      [strategy]: JSON.stringify(DEFAULT_STRATEGY_OVERRIDES[strategy], null, 2)
+                    }))
+                  }
+                >
+                  Reset JSON
+                </button>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
 
