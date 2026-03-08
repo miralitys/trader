@@ -182,6 +182,64 @@ services:
       - key: COINBASE_API_PASSPHRASE
         sync: false
 
+  - type: worker
+    name: trader-history-worker
+    runtime: python
+    rootDir: backend
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: sh ./scripts/start_worker.sh
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: trader-postgres
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: trader-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: PAPER_ENABLED
+        value: "1"
+      - key: LIVE_ENABLED
+        value: "0"
+      - key: CELERY_QUEUES
+        value: "history"
+      - key: CELERY_WITH_BEAT
+        value: "0"
+      - key: CELERY_CONCURRENCY
+        value: "1"
+      - key: CELERY_POOL
+        value: "solo"
+      - key: CELERY_MAX_TASKS_PER_CHILD
+        value: "5"
+      - key: CELERY_PREFETCH_MULTIPLIER
+        value: "1"
+      - key: COINBASE_API_BASE_URL
+        value: "https://api.coinbase.com"
+      - key: BACKFILL_5M_DAYS
+        value: "730"
+      - key: BACKFILL_15M_DAYS
+        value: "365"
+      - key: BACKFILL_1H_DAYS
+        value: "730"
+      - key: BACKFILL_MAX_SYMBOLS_PER_RUN
+        value: "15"
+      - key: BACKFILL_MAX_CHUNKS_PER_TF
+        value: "240"
+      - key: SECRET_ENCRYPTION_KEY
+        sync: false
+      - key: COINBASE_API_KEY
+        sync: false
+      - key: COINBASE_API_SECRET
+        sync: false
+      - key: COINBASE_API_PASSPHRASE
+        sync: false
+
   - type: web
     name: trader-frontend
     runtime: node

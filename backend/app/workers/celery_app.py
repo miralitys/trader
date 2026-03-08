@@ -23,6 +23,7 @@ celery_app.conf.update(
     task_default_queue="default",
     task_routes={
         "app.workers.tasks.backtest_task": {"queue": "backtests"},
+        "app.workers.tasks.backfill_history_task": {"queue": "history"},
     },
 )
 
