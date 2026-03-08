@@ -140,13 +140,22 @@ def get_backtest_progress(
     strategy_items: list[BacktestProgressStrategyOut] = []
     ready_count = 0
     for strategy in ALL_BACKTEST_STRATEGIES:
-        readiness = inspect_backtest_history_readiness(
-            db,
-            strategy=strategy,
-            start_ts=start_ts,
-            end_ts=end_ts,
-            params={},
-        )
+        try:
+            readiness = inspect_backtest_history_readiness(
+                db,
+                strategy=strategy,
+                start_ts=start_ts,
+                end_ts=end_ts,
+                params={},
+            )
+        except Exception as exc:
+            readiness = {
+                "ready": False,
+                "reason": f"progress_unavailable: {exc}",
+                "coverage": {"effective_ratio": 0.0, "required_ratio": 0.0},
+                "universe": {"selected_top5": []},
+            }
+
         ready = bool(readiness.get("ready"))
         if ready:
             ready_count += 1

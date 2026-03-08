@@ -156,6 +156,7 @@ export default function BacktestsPage() {
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null)
   const [selectedStrategy, setSelectedStrategy] = useState<StrategyKey>('StrategyBreakoutRetest')
   const [progress, setProgress] = useState<BacktestProgress | null>(null)
+  const [progressError, setProgressError] = useState<string | null>(null)
   const [runningByStrategy, setRunningByStrategy] = useState<Record<string, boolean>>({})
   const [stoppingByStrategy, setStoppingByStrategy] = useState<Record<string, boolean>>({})
   const [clearingByStrategy, setClearingByStrategy] = useState<Record<string, boolean>>({})
@@ -230,8 +231,10 @@ export default function BacktestsPage() {
     try {
       const data = await apiFetch<BacktestProgress>('/api/backtests/progress')
       setProgress(data)
-    } catch {
+      setProgressError(null)
+    } catch (err) {
       setProgress(null)
+      setProgressError(err instanceof Error ? err.message : 'Progress unavailable')
     }
   }
 
@@ -351,6 +354,12 @@ export default function BacktestsPage() {
               </div>
             ))}
           </div>
+        </div>
+      ) : progressError ? (
+        <div className="card p-4 text-sm text-bad whitespace-pre-wrap">
+          History progress unavailable.
+          {'\n'}
+          {progressError}
         </div>
       ) : null}
 
