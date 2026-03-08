@@ -271,7 +271,7 @@ def test_run_backtest_returns_cancelled_without_processing(db_session):
     assert result.metrics_json.get("cancelled") is True
 
 
-def test_history_readiness_allows_degraded_mode_when_requested(db_session, monkeypatch):
+def test_history_readiness_rejects_sparse_history_even_when_degraded_requested(db_session, monkeypatch):
     now = datetime.now(timezone.utc)
     start_ts = now - timedelta(days=730)
 
@@ -349,6 +349,7 @@ def test_history_readiness_allows_degraded_mode_when_requested(db_session, monke
         },
     )
 
-    assert readiness["ready"] is True
-    assert readiness["coverage"]["degraded_mode_applied"] is True
-    assert readiness["coverage"]["allow_degraded_history"] is True
+    assert readiness["ready"] is False
+    assert readiness["reason"] in {"insufficient_common_history", "no_symbols_with_min_coverage"}
+    assert readiness["coverage"]["degraded_mode_applied"] is False
+    assert readiness["coverage"]["allow_degraded_history"] is False

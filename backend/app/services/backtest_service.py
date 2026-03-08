@@ -125,20 +125,6 @@ def _to_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _to_bool(value: Any, default: bool = False) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        normalized = value.strip().lower()
-        if normalized in {"1", "true", "yes", "on"}:
-            return True
-        if normalized in {"0", "false", "no", "off"}:
-            return False
-    return default
-
-
 def _format_ratio(value: float) -> str:
     return f"{value:.3f}".rstrip("0").rstrip(".")
 
@@ -524,7 +510,8 @@ def _build_backtest_plan(
     )
 
     requested_days = max(1.0, (requested_end - requested_start).total_seconds() / 86400.0)
-    allow_degraded_history = _to_bool(params.get("history_allow_degraded"), False)
+    # Degraded-history fallback is disabled to avoid misleading results on sparse history.
+    allow_degraded_history = False
     auto_enforced_floor = (
         runtime_strategy == "StrategyTrendRetrace70"
         and requested_days >= LONG_WINDOW_AUTO_COVERAGE_DAYS
@@ -572,23 +559,6 @@ def _build_backtest_plan(
         effective_start=effective_start,
     )
     degraded_mode_applied = False
-
-    if allow_degraded_history and candidates and (not selected_symbols or effective_coverage_ratio < required_coverage_ratio):
-        degraded_mode_applied = True
-        min_coverage_ratio = 0.0
-        required_coverage_ratio = 0.0
-        selected = _select_top5_with_history(
-            candidates=candidates,
-            target_coverage_ratio=target_coverage_ratio,
-            min_coverage_ratio=min_coverage_ratio,
-        )
-        selected_symbols = [item.symbol for item in selected]
-        effective_start = _compute_effective_common_start(selected, requested_start, requested_end)
-        effective_coverage_ratio = _effective_coverage_ratio(
-            requested_start=requested_start,
-            requested_end=requested_end,
-            effective_start=effective_start,
-        )
 
     data_availability_report = _build_data_availability_report(candidates)
 
